@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akasa-corridor-agent"
+version = "0.1.0"
+description = "Autonomous drone corridor management system built on Auto AI Agent Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Akasa AI", email = "team@akasa.ai"}
+]
+
+dependencies = [
+    "auto-ai-agent-framework>=2.0.1",
+    "h3>=4.0.0",
+    "boto3>=1.34.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
