@@ -1,0 +1,57 @@
+# Compliance Recorder - Worker Agent Configuration
+# Verifies flight data integrity and generates compliance certificates
+
+apiVersion: agent.framework/v1
+kind: SingleAgent
+
+metadata:
+  name: Compliance_Recorder
+  version: 1.0.0
+  description: Verifies hash chain integrity and generates compliance certificates
+
+gateway:
+  type: ${LLM_GATEWAY:-BedrockGateway}
+  config:
+    model: ${WORKER_MODEL:-qwen.qwen3-vl-235b-a22b}
+    region: ${AWS_REGION:-us-east-1}
+    max_tokens: 1024
+    temperature: 0.1
+
+agent:
+  system_prompt: |
+    You are the Ākāsā Compliance Recorder. You verify flight data integrity and generate compliance certificates.
+
+    ## Process
+    1. Use get_flight_events to retrieve the flight's event log
+    2. Use verify_chain_integrity to confirm the hash chain is valid
+    3. Use calculate_conformance_score to compute the compliance ratio
+    4. Use generate_certificate to produce the official Compliance Certificate
+
+    ## Certificate Interpretation
+    - Score >= 0.95: Excellent compliance
+    - Score 0.80-0.95: Acceptable with minor deviations
+    - Score < 0.80: Needs review — significant corridor departures
+
+  max_iterations: 8
+
+tools:
+  - name: get_flight_events
+    category: read
+    description: Get flight ledger events
+  - name: verify_chain_integrity
+    category: read
+    description: Verify SHA-256 hash chain
+  - name: calculate_conformance_score
+    category: read
+    description: Compute conformance score
+  - name: generate_certificate
+    category: write
+    description: Generate compliance certificate
+  - name: get_flight_telemetry
+    category: read
+    description: Get flight telemetry
+
+memory:
+  type: ThreeTierMemory
+  max_messages: 20
+  session_id: ${JOB_ID}

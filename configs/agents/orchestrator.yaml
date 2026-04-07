@@ -1,0 +1,121 @@
+# Akasa Mission Orchestrator - ManagerAgent Configuration
+# Routes user intent to specialized workers: corridor designer, flight guardian, compliance recorder
+
+apiVersion: agent.framework/v2
+kind: ManagerAgent
+
+metadata:
+  name: Akasa_Mission_Orchestrator
+  description: Top-level orchestrator that routes mission tasks to specialized agents.
+  version: 1.0.0
+
+resources:
+  inference_gateways:
+    - name: orchestrator-gateway
+      type: ${LLM_GATEWAY:-BedrockGateway}
+      config:
+        model: ${COORDINATOR_MODEL:-global.anthropic.claude-haiku-4-5-20251001-v1:0}
+        region: ${AWS_REGION:-us-east-1}
+        temperature: 0.1
+
+  subscribers:
+    - name: logging
+      type: LoggingSubscriber
+      config:
+        level: INFO
+        include_data: true
+        max_payload_chars: 5000
+
+spec:
+  policies:
+    $preset: manager_with_followups
+    follow_up:
+      type: DefaultFollowUpPolicy
+      config:
+        enabled: true
+        max_phases: 10
+        check_completion: true
+        stop_on_completion: true
+
+  workers:
+    - name: designer
+      config_path: corridor_designer.yaml
+    - name: guardian
+      config_path: flight_guardian.yaml
+    - name: compliance
+      config_path: compliance_recorder.yaml
+
+  memory:
+    type: SharedInMemoryMemory
+    config:
+      namespace: ${JOB_ID:-default}
+      agent_key: orchestrator
+
+  planner:
+    type: StrategicPlanner
+    config:
+      inference_gateway: orchestrator-gateway
+      worker_keys: [designer, guardian, compliance]
+      planning_prompt: |
+        You are the Ākāsā Mission Coordinator. Route user requests to the appropriate specialist agent.
+
+        ## Available Workers
+
+        - **designer**: Creates and validates aerial corridors (H3 digital rails)
+          Use for: corridor creation, listing, validation, route planning
+
+        - **guardian**: Monitors drone flights, detects deviations, applies corrections
+          Use for: flight simulation, monitoring, wind/GPS disruption testing
+
+        - **compliance**: Verifies hash chain integrity, generates compliance certificates
+          Use for: flight auditing, chain verification, certificate generation
+
+        ## Worker Selection Rubric
+
+        | Intent | Worker | Example |
+        |--------|--------|---------|
+        | Create corridor | designer | "Create a corridor from SF to Oakland" |
+        | Validate corridor | designer | "Validate corridor safety" |
+        | Start/monitor flight | guardian | "Fly the corridor and monitor" |
+        | Inject disruption | guardian | "Test with wind gusts" |
+        | Verify compliance | compliance | "Check chain integrity" |
+        | Generate certificate | compliance | "Certify the flight" |
+        | Full mission | designer → guardian → compliance | "Run a complete mission" |
+
+        ## Output Format (strict JSON)
+
+        {
+          "refined_intent": "<one-sentence task focus>",
+          "plan": {
+            "primary_worker": "<designer|guardian|compliance>",
+            "task_type": "<design|monitoring|compliance|full_mission>",
+            "phases": [
+              {"name": "<phase name>", "worker": "<designer|guardian|compliance>", "goals": "<what to achieve>"}
+            ],
+            "rationale": "1-3 sentences on approach"
+          }
+        }
+
+  synthesizer:
+    enabled: true
+    inference_gateway: orchestrator-gateway
+    system_prompt: |
+      You are a mission synthesis specialist. Transform worker results into structured responses.
+
+      ALWAYS return JSON with this structure:
+      {
+        "final_response": {
+          "operation": "<operation_type>",
+          "payload": { <structured_data> },
+          "human_readable_summary": "<concise summary>"
+        }
+      }
+
+      Operation types:
+      - "corridor_created": Corridor design results
+      - "flight_report": Flight monitoring results
+      - "compliance_certificate": Compliance certification results
+      - "mission_complete": Full mission summary
+      - "display_message": General text response
+
+  subscribers: [logging]

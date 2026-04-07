@@ -3,6 +3,10 @@
 This wires the auto-ai-agent-framework's SingleAgent to our drone tools,
 exercising: memory, context assembly, stagnation detection, goal tracking,
 token tracking, tool executor — all v2.1 improvements.
+
+Supports two creation modes:
+1. Programmatic: CorridorAgent(job_id, mode=...)
+2. Config-based: CorridorAgent.from_config(config_path, job_id)
 """
 
 from __future__ import annotations
@@ -11,7 +15,8 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 # Framework imports
 from agent_framework.composable.agents.single import SingleAgent, StagnationConfig
@@ -292,3 +297,146 @@ COMPLIANCE_SYSTEM_PROMPT = """You are the Ākāsā Compliance Recorder. You veri
 - Score 0.80-0.95: Acceptable with minor deviations
 - Score < 0.80: Needs review — significant corridor departures
 """
+
+COORDINATOR_SYSTEM_PROMPT = """You are the Ākāsā Mission Coordinator. You plan, delegate, and synthesize results from specialist agents to execute drone corridor missions.
+
+## Agents
+- **Corridor Designer**: Creates and validates aerial corridors (H3 digital rails)
+- **Flight Guardian**: Monitors drone flights, detects deviations, applies corrections
+- **Compliance Recorder**: Verifies hash chain integrity, generates compliance certificates
+
+## Mission Workflow
+1. Corridor Design: Create digital rail between two points, validate safety
+2. Flight Monitoring: Start simulation, monitor block membership, handle deviations
+3. Compliance: Verify chain integrity, compute conformance score, generate certificate
+
+## Guidelines
+- Delegate tasks to the appropriate specialist
+- Synthesize results from each phase into a mission summary
+- Report any issues encountered during the mission
+"""
+
+# Default config path
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "configs" / "agents" / "sdk_agent.yaml"
+
+
+class CorridorAgent:
+    """Unified agent wrapper for Akasa Corridor operations.
+
+    Adapted from PowerBIAgent pattern in power-bi-backend-agent-v2.
+    Supports single-agent mode (all tools) and multi-agent mode (orchestrated).
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        mode: str = "single",
+        model: str = None,
+        max_iterations: int = 20,
+    ):
+        self.job_id = job_id
+        self.mode = mode  # "single", "guardian", "designer", "compliance"
+
+        if mode == "guardian":
+            self.agent = create_guardian_agent(model=model, max_iterations=max_iterations)
+        elif mode == "designer":
+            self.agent = create_corridor_designer_agent(model=model, max_iterations=max_iterations)
+        elif mode == "compliance":
+            self.agent = create_compliance_agent(model=model, max_iterations=max_iterations)
+        else:
+            # Single agent with all tools (default for API use)
+            self.agent = self._create_single_agent(model=model, max_iterations=max_iterations)
+
+        logger.info(f"[CorridorAgent] Created: mode={mode}, job_id={job_id}")
+
+    def _create_single_agent(self, model: str = None, max_iterations: int = 20) -> SingleAgent:
+        """Create a single agent with all tools (standalone mode)."""
+        model = model or os.environ.get("LLM_MODEL", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+
+        gateway_config = GatewayConfig(
+            model=model,
+            max_tokens=2048,
+            temperature=0.1,
+            extra={"region": os.environ.get("AWS_REGION", "us-east-1")},
+        )
+        gateway = BedrockGateway(gateway_config)
+
+        memory = ThreeTierMemory(config=MemoryConfig(max_messages=50, session_id=self.job_id))
+
+        agent_config = AgentConfig(
+            agent_id=f"corridor-{self.job_id}",
+            name="AkasaCorridorAgent",
+            max_iterations=max_iterations,
+            system_prompt=COORDINATOR_SYSTEM_PROMPT,
+        )
+
+        tool_defs = build_tool_definitions()
+
+        return SingleAgent(
+            gateway=gateway,
+            config=agent_config,
+            memory=memory,
+            tools=tool_defs,
+            tool_executor=create_tool_executor(),
+            stagnation_config=StagnationConfig(max_tool_calls_before_prompt=15),
+        )
+
+    async def run(self, user_message: str) -> AsyncIterator[AgentEvent]:
+        """Run the agent with a user message, yielding events."""
+        async for event in self.agent.run(user_message):
+            yield event
+
+    async def run_to_completion(self, user_message: str) -> Dict[str, Any]:
+        """Run the agent and return the final result."""
+        result = await self.agent.run_to_completion(user_message)
+        return {
+            "content": result.content,
+            "success": result.success,
+            "iterations": result.iterations,
+            "duration_s": result.duration_seconds,
+            "tool_calls": result.tool_calls,
+            "usage": result.usage.to_dict() if result.usage else None,
+        }
+
+    def reset(self) -> None:
+        """Reset the agent for a new conversation."""
+        self.agent.reset()
+
+    @classmethod
+    def from_config(
+        cls,
+        job_id: str,
+        config_path: Optional[str] = None,
+    ) -> "CorridorAgent":
+        """Create CorridorAgent from YAML configuration."""
+        try:
+            from agent_framework.composable import ConfigLoader
+        except ImportError:
+            logger.warning("Config loading not available. Using programmatic creation.")
+            return cls(job_id=job_id)
+
+        path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        if not path.exists():
+            logger.warning(f"Config not found: {path}. Using programmatic creation.")
+            return cls(job_id=job_id)
+
+        loader = ConfigLoader()
+        config = loader.load(path)
+
+        os.environ["JOB_ID"] = job_id
+
+        tool_defs = build_tool_definitions()
+
+        agent = SingleAgent.from_config(
+            config=config,
+            tool_executor=create_tool_executor(),
+            tool_definitions=tool_defs,
+        )
+
+        instance = cls.__new__(cls)
+        instance.job_id = job_id
+        instance.mode = "config"
+        instance.agent = agent
+
+        logger.info(f"[CorridorAgent] Created from config: {path}")
+        return instance

@@ -1,0 +1,54 @@
+# Corridor Designer - Worker Agent Configuration
+# Creates and validates H3 digital rail corridors
+
+apiVersion: agent.framework/v1
+kind: SingleAgent
+
+metadata:
+  name: Corridor_Designer
+  version: 1.0.0
+  description: Creates and validates aerial corridors using H3 geocode cells
+
+gateway:
+  type: ${LLM_GATEWAY:-BedrockGateway}
+  config:
+    model: ${WORKER_MODEL:-qwen.qwen3-vl-235b-a22b}
+    region: ${AWS_REGION:-us-east-1}
+    max_tokens: 1024
+    temperature: 0.1
+
+agent:
+  system_prompt: |
+    You are the Ākāsā Corridor Designer. You create and validate aerial corridors.
+
+    ## Process
+    1. Use create_corridor to define a new corridor between two points
+    2. Use validate_corridor to verify safety parameters
+    3. Report the corridor details including block count and estimated distance
+
+    ## Guidelines
+    - Use H3 resolution 10 (65m cells) for standard corridors
+    - Use resolution 9 (174m cells) for long-distance corridors
+    - Always validate after creation
+    - Report corridor_id for use by downstream agents
+
+  max_iterations: 10
+
+tools:
+  - name: create_corridor
+    category: write
+    description: Create a new aerial corridor
+  - name: list_corridors
+    category: read
+    description: List all corridors
+  - name: get_corridor_detail
+    category: read
+    description: Get corridor details
+  - name: validate_corridor
+    category: read
+    description: Validate corridor safety
+
+memory:
+  type: ThreeTierMemory
+  max_messages: 30
+  session_id: ${JOB_ID}

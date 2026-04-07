@@ -1,0 +1,74 @@
+# Flight Guardian - Worker Agent Configuration
+# Monitors drone flights, detects deviations, applies corrections
+
+apiVersion: agent.framework/v1
+kind: SingleAgent
+
+metadata:
+  name: Flight_Guardian
+  version: 1.0.0
+  description: Monitors drone flights along digital rails, handles deviations
+
+gateway:
+  type: ${LLM_GATEWAY:-BedrockGateway}
+  config:
+    model: ${GUARDIAN_MODEL:-global.anthropic.claude-haiku-4-5-20251001-v1:0}
+    region: ${AWS_REGION:-us-east-1}
+    max_tokens: 1024
+    temperature: 0.1
+
+agent:
+  system_prompt: |
+    You are the Ākāsā Flight Guardian AI. You monitor a simulated drone flying along a digital rail.
+
+    ## Control Loop (every cycle)
+    1. check_block_membership — resolve drone position to geocode block, compare to assigned
+    2. If NOMINAL: step_simulation to advance
+    3. If DEVIATING: generate_correction first, then step_simulation
+    4. Repeat for the requested number of cycles
+
+    ## Key Rules
+    - ALWAYS check block_membership BEFORE stepping
+    - If deviation detected, correct BEFORE stepping
+    - After completing monitoring cycles, call complete_flight
+    - Provide brief reasoning for each action
+    - Track total deviations and corrections applied
+
+  max_iterations: 25
+
+tools:
+  - name: start_simulation
+    category: write
+    description: Start drone on corridor
+  - name: step_simulation
+    category: write
+    description: Advance simulation
+  - name: get_drone_position
+    category: read
+    description: Get current position
+  - name: check_block_membership
+    category: read
+    description: Check if drone is in assigned block
+  - name: generate_correction
+    category: write
+    description: Generate course correction
+  - name: inject_wind_gust
+    category: write
+    description: Inject wind disruption
+  - name: inject_gps_noise
+    category: write
+    description: Inject GPS noise
+  - name: get_flight_telemetry
+    category: read
+    description: Get telemetry snapshot
+  - name: complete_flight
+    category: write
+    description: Complete flight
+  - name: emergency_land
+    category: write
+    description: Emergency landing
+
+memory:
+  type: ThreeTierMemory
+  max_messages: 40
+  session_id: ${JOB_ID}

@@ -1,0 +1,127 @@
+# Akasa Corridor Agent - SingleAgent Configuration
+# Uses the Composable Agent Framework (agent_framework.composable)
+
+apiVersion: agent.framework/v1
+kind: SingleAgent
+
+metadata:
+  name: Akasa_Corridor_Agent
+  version: 1.0.0
+  description: Single agent with all 18 corridor tools for standalone operation
+
+gateway:
+  type: ${LLM_GATEWAY:-BedrockGateway}
+  config:
+    model: ${LLM_MODEL:-global.anthropic.claude-haiku-4-5-20251001-v1:0}
+    region: ${AWS_REGION:-us-east-1}
+    max_tokens: 2048
+    temperature: 0.1
+    cache:
+      enabled: true
+      cache_system_prompt: true
+      cache_tools: true
+
+agent:
+  system_prompt: |
+    You are the Ākāsā Corridor Agent — an autonomous drone corridor management system.
+
+    You have access to 18 tools across three domains:
+
+    **Corridor Management (4 tools):**
+    - create_corridor: Create H3 digital rail between two points
+    - list_corridors: List all corridors
+    - get_corridor_detail: Full corridor info
+    - validate_corridor: Safety validation
+
+    **Flight Simulation (10 tools):**
+    - start_simulation: Start drone on corridor
+    - step_simulation: Advance by 0.5s
+    - get_drone_position: Current lat/lon/alt
+    - check_block_membership: Core patent — resolve position to H3 cell, compare to assigned
+    - generate_correction: Steer drone back to assigned block
+    - inject_wind_gust: Simulate wind disruption
+    - inject_gps_noise: Simulate GPS degradation
+    - get_flight_telemetry: Full telemetry snapshot
+    - complete_flight: End flight normally
+    - emergency_land: Abort flight
+
+    **Compliance (4 tools):**
+    - get_flight_events: Get ledger events
+    - verify_chain_integrity: Verify SHA-256 hash chain
+    - calculate_conformance_score: Compute compliance ratio
+    - generate_certificate: Generate Compliance Certificate
+
+    ## Mission Workflow
+    1. Create and validate a corridor
+    2. Start simulation, monitor flights (check_block_membership -> step or correct)
+    3. Complete flight, verify chain, generate certificate
+
+    Be concise. Focus on executing the requested task efficiently.
+
+  max_iterations: 25
+
+tools:
+  # Corridor tools
+  - name: create_corridor
+    category: write
+    description: Create a new aerial corridor (digital rail)
+  - name: list_corridors
+    category: read
+    description: List all corridors
+  - name: get_corridor_detail
+    category: read
+    description: Get full corridor details
+  - name: validate_corridor
+    category: read
+    description: Validate corridor safety parameters
+
+  # Simulation tools
+  - name: start_simulation
+    category: write
+    description: Start a drone flight simulation
+  - name: step_simulation
+    category: write
+    description: Advance simulation by 0.5s
+  - name: get_drone_position
+    category: read
+    description: Get current drone position
+  - name: check_block_membership
+    category: read
+    description: Check if drone is in assigned geocode block
+  - name: generate_correction
+    category: write
+    description: Generate course correction for deviated drone
+  - name: inject_wind_gust
+    category: write
+    description: Inject wind disruption
+  - name: inject_gps_noise
+    category: write
+    description: Inject GPS noise
+  - name: get_flight_telemetry
+    category: read
+    description: Get full flight telemetry
+  - name: complete_flight
+    category: write
+    description: Complete a flight normally
+  - name: emergency_land
+    category: write
+    description: Emergency landing
+
+  # Compliance tools
+  - name: get_flight_events
+    category: read
+    description: Get flight ledger events
+  - name: verify_chain_integrity
+    category: read
+    description: Verify SHA-256 hash chain
+  - name: calculate_conformance_score
+    category: read
+    description: Compute conformance score
+  - name: generate_certificate
+    category: write
+    description: Generate compliance certificate
+
+memory:
+  type: ThreeTierMemory
+  max_messages: 50
+  session_id: ${JOB_ID}
