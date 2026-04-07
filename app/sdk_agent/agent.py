@@ -40,7 +40,8 @@ from agent_framework.composable.agents.stagnation import EnhancedStagnationDetec
 from agent_framework.composable.agents.goal_tracker import GoalTracker, GoalTrackerConfig
 
 # Local tools
-from .tools.registry import execute_tool, get_tool_definitions
+from .tools.registry import get_tool_definitions
+from .tools.executor import create_tool_executor
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +66,6 @@ def build_tool_definitions() -> List[ToolDefinition]:
             parameters=params,
         ))
     return tool_defs
-
-
-def create_tool_executor() -> Callable:
-    """Create a tool executor function that bridges framework to our registry."""
-    def executor(name: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        return execute_tool(name, input_data)
-    return executor
 
 
 def create_guardian_agent(
@@ -377,7 +371,7 @@ class CorridorAgent:
             config=agent_config,
             memory=memory,
             tools=tool_defs,
-            tool_executor=create_tool_executor(),
+            tool_executor=create_tool_executor(job_id=self.job_id),
             stagnation_config=StagnationConfig(max_tool_calls_before_prompt=15),
         )
 
@@ -429,7 +423,7 @@ class CorridorAgent:
 
         agent = SingleAgent.from_config(
             config=config,
-            tool_executor=create_tool_executor(),
+            tool_executor=create_tool_executor(job_id=job_id),
             tool_definitions=tool_defs,
         )
 
