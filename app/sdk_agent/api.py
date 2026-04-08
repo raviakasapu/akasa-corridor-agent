@@ -19,7 +19,10 @@ from pydantic import BaseModel
 
 from .agent import CorridorAgent
 from agent_framework.composable.agents.events import AgentEvent, AgentEventType
-from .tools.simulation.engine import register_tick_callback, unregister_tick_callback
+from .tools.simulation.engine import (
+    register_tick_callback, register_alert_callback,
+    register_edge_telemetry_callback, unregister_tick_callback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +195,7 @@ async def websocket_agent(websocket: WebSocket):
                         if tool_name == "start_simulation" and isinstance(result_data, dict):
                             flight_id = result_data.get("flight_id", "")
                             if flight_id:
+                                # Register tick callback (drone position updates)
                                 async def make_tick_sender(ws=websocket):
                                     async def send_tick(state: dict):
                                         try:
@@ -204,6 +208,34 @@ async def websocket_agent(websocket: WebSocket):
                                             pass
                                     return send_tick
                                 register_tick_callback(flight_id, await make_tick_sender())
+
+                                # Register alert callback (edge computer alerts)
+                                async def make_alert_sender(ws=websocket):
+                                    async def send_alert(alert_data: dict):
+                                        try:
+                                            await ws.send_json({
+                                                "event": "edge_alert",
+                                                "data": alert_data,
+                                                "timestamp": int(time.time() * 1000),
+                                            })
+                                        except Exception:
+                                            pass
+                                    return send_alert
+                                register_alert_callback(flight_id, await make_alert_sender())
+
+                                # Register edge telemetry callback
+                                async def make_telemetry_sender(ws=websocket):
+                                    async def send_telemetry(telem_data: dict):
+                                        try:
+                                            await ws.send_json({
+                                                "event": "edge_telemetry",
+                                                "data": telem_data,
+                                                "timestamp": int(time.time() * 1000),
+                                            })
+                                        except Exception:
+                                            pass
+                                    return send_telemetry
+                                register_edge_telemetry_callback(flight_id, await make_telemetry_sender())
 
                         if tool_name in (
                             "start_simulation", "step_simulation",

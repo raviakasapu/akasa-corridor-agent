@@ -11,6 +11,8 @@ export enum EventType {
   Error = "error",
   SimulationUpdated = "simulation_updated",
   SimulationTick = "simulation_tick",
+  EdgeAlert = "edge_alert",
+  EdgeTelemetry = "edge_telemetry",
   Pong = "pong",
 }
 
@@ -108,6 +110,32 @@ export interface MissionStats {
   durationS: number;
   conformanceScore: number | null;
   certificateId: string | null;
+}
+
+export interface EdgeAlert {
+  alertId: string;
+  alertType: string;
+  severity: "INFO" | "WARNING" | "CRITICAL";
+  timestamp: string;
+  flightId: string;
+  step: number;
+  data: Record<string, unknown>;
+  message: string;
+  acknowledged: boolean;
+}
+
+export interface EdgeTelemetry {
+  flightId: string;
+  avgDeviationM: number;
+  maxDeviationM: number;
+  blockMatchRate: number;
+  conformanceScore: number;
+  progressPercent: number;
+  activeAlerts: number;
+  pendingAlerts: number;
+  avgWindSpeed: number;
+  maxWindSpeed: number;
+  elapsedSeconds: number;
 }
 
 export interface Mission {

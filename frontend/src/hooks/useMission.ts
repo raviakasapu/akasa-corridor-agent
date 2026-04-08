@@ -3,7 +3,7 @@ import { useMissionStore } from "../store/missionStore";
 import { useWebSocket } from "./useWebSocket";
 import { send } from "../utils/websocket";
 import { EventType } from "../types";
-import type { AgentEvent, ToolCall, ToolResult, Drone } from "../types";
+import type { AgentEvent, ToolCall, ToolResult, Drone, EdgeAlert, EdgeTelemetry } from "../types";
 
 export function useMission() {
   const store = useMissionStore();
@@ -183,8 +183,43 @@ export function useMission() {
           break;
         }
 
+        case EventType.EdgeAlert: {
+          const ad = event.data;
+          const alert: EdgeAlert = {
+            alertId: (ad.alert_id as string) || "",
+            alertType: (ad.alert_type as string) || "",
+            severity: (ad.severity as EdgeAlert["severity"]) || "INFO",
+            timestamp: (ad.timestamp as string) || "",
+            flightId: (ad.flight_id as string) || "",
+            step: (ad.step as number) || 0,
+            data: (ad.data as Record<string, unknown>) || {},
+            message: (ad.message as string) || "",
+            acknowledged: false,
+          };
+          store.addEdgeAlert(alert);
+          break;
+        }
+
+        case EventType.EdgeTelemetry: {
+          const td = event.data;
+          const telem: EdgeTelemetry = {
+            flightId: (td.flight_id as string) || "",
+            avgDeviationM: (td.avg_deviation_m as number) || 0,
+            maxDeviationM: (td.max_deviation_m as number) || 0,
+            blockMatchRate: (td.block_match_rate as number) || 1,
+            conformanceScore: (td.conformance_score as number) || 1,
+            progressPercent: (td.progress_percent as number) || 0,
+            activeAlerts: (td.active_alerts as number) || 0,
+            pendingAlerts: (td.pending_alerts as number) || 0,
+            avgWindSpeed: (td.avg_wind_speed as number) || 0,
+            maxWindSpeed: (td.max_wind_speed as number) || 0,
+            elapsedSeconds: (td.elapsed_seconds as number) || 0,
+          };
+          store.setEdgeTelemetry(telem);
+          break;
+        }
+
         case EventType.SimulationUpdated:
-          // Trigger map refresh — drone state already updated via tick/tool_done
           break;
       }
     },

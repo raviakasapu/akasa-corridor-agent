@@ -9,6 +9,8 @@ import type {
   ToolCall,
   ToolResult,
   EventType,
+  EdgeAlert,
+  EdgeTelemetry,
 } from "../types";
 
 interface MissionState {
@@ -31,6 +33,12 @@ interface MissionState {
   // Corridor
   corridor: Corridor | null;
   setCorridor: (c: Corridor) => void;
+
+  // Edge Computer
+  edgeAlerts: EdgeAlert[];
+  edgeTelemetry: EdgeTelemetry | null;
+  addEdgeAlert: (a: EdgeAlert) => void;
+  setEdgeTelemetry: (t: EdgeTelemetry) => void;
 
   // Events
   events: AgentEvent[];
@@ -101,6 +109,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       drone: null,
       flightTrail: [],
       corridor: null,
+      edgeAlerts: [],
+      edgeTelemetry: null,
       events: [],
       agent: { ...defaultAgent },
     }),
@@ -119,6 +129,12 @@ export const useMissionStore = create<MissionState>((set, get) => ({
 
   corridor: null,
   setCorridor: (c) => set({ corridor: c }),
+
+  edgeAlerts: [],
+  edgeTelemetry: null,
+  addEdgeAlert: (a) =>
+    set((s) => ({ edgeAlerts: [...s.edgeAlerts, a].slice(-50) })),
+  setEdgeTelemetry: (t) => set({ edgeTelemetry: t }),
 
   events: [],
   addEvent: (e) =>

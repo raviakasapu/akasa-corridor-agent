@@ -734,40 +734,77 @@ class DroneSimulator:
 _active_simulations: Dict[str, DroneSimulator] = {}
 _corridors: Dict[str, Dict[str, Any]] = {}
 
-# Callbacks for pushing simulation ticks to clients
+# Edge computers per flight
+_edge_computers: Dict[str, Any] = {}  # flight_id -> EdgeComputer
+
+# Callbacks for pushing events to clients
 _tick_callbacks: Dict[str, Any] = {}  # flight_id -> async callback
+_alert_callbacks: Dict[str, Any] = {}  # flight_id -> async callback
+_edge_telemetry_callbacks: Dict[str, Any] = {}  # flight_id -> async callback
 
 
 async def run_simulation_loop(
     sim: DroneSimulator,
     tick_interval: float = 0.3,
 ) -> None:
-    """Run the simulation in a background async loop.
+    """Run the simulation in a background async loop with 3-layer architecture.
 
-    Advances the drone automatically with realistic physics and pushes
-    position updates to the frontend via registered tick callback.
+    Layer 1 (Autopilot): DroneSimulator.step() — millisecond physics
+    Layer 2 (Edge Computer): Monitors every 5 ticks, generates alerts
+    Layer 3 (AI Agent): Receives alerts via WebSocket, makes strategic decisions
     """
     import asyncio
+    from .edge_computer import EdgeComputer
+
+    # Create edge computer for this flight
+    edge = EdgeComputer(sim, check_interval=5)
+    _edge_computers[sim.flight_id] = edge
 
     last_time = time.monotonic()
+    telemetry_counter = 0
 
     while sim.is_active and not sim.is_complete:
         now = time.monotonic()
         dt = now - last_time
         last_time = now
 
+        # Layer 1: Autopilot step
         state = sim.step(dt=dt)
 
-        callback = _tick_callbacks.get(sim.flight_id)
-        if callback:
+        # Layer 2: Edge computer processes tick
+        new_alerts = edge.process_tick(state)
+
+        # Push tick to frontend
+        tick_cb = _tick_callbacks.get(sim.flight_id)
+        if tick_cb:
             try:
-                await callback(state)
+                await tick_cb(state)
             except Exception:
                 pass
 
+        # Push any new alerts
+        alert_cb = _alert_callbacks.get(sim.flight_id)
+        if alert_cb and new_alerts:
+            for alert in new_alerts:
+                try:
+                    await alert_cb(alert.to_dict())
+                except Exception:
+                    pass
+
+        # Push edge telemetry summary every ~30 ticks (~9 seconds)
+        telemetry_counter += 1
+        if telemetry_counter >= 30:
+            telemetry_counter = 0
+            telem_cb = _edge_telemetry_callbacks.get(sim.flight_id)
+            if telem_cb:
+                try:
+                    await telem_cb(edge.get_telemetry_summary().to_dict())
+                except Exception:
+                    pass
+
         await asyncio.sleep(tick_interval)
 
-    # Final tick with full state
+    # Final tick
     final_state = {
         "flight_id": sim.flight_id,
         "position": sim.position.to_dict(),
@@ -789,10 +826,10 @@ async def run_simulation_loop(
             "cumulative_corrections": sim.autopilot.cumulative_corrections,
         },
     }
-    callback = _tick_callbacks.get(sim.flight_id)
-    if callback:
+    tick_cb = _tick_callbacks.get(sim.flight_id)
+    if tick_cb:
         try:
-            await callback(final_state)
+            await tick_cb(final_state)
         except Exception:
             pass
 
@@ -802,9 +839,30 @@ def register_tick_callback(flight_id: str, callback) -> None:
     _tick_callbacks[flight_id] = callback
 
 
+def register_alert_callback(flight_id: str, callback) -> None:
+    """Register an async callback for edge alert events."""
+    _alert_callbacks[flight_id] = callback
+
+
+def register_edge_telemetry_callback(flight_id: str, callback) -> None:
+    """Register an async callback for edge telemetry summaries."""
+    _edge_telemetry_callbacks[flight_id] = callback
+
+
+def get_edge_computer(flight_id: str = None):
+    """Get edge computer for a flight."""
+    if flight_id:
+        return _edge_computers.get(flight_id)
+    if _edge_computers:
+        return list(_edge_computers.values())[-1]
+    return None
+
+
 def unregister_tick_callback(flight_id: str) -> None:
-    """Remove tick callback."""
+    """Remove all callbacks for a flight."""
     _tick_callbacks.pop(flight_id, None)
+    _alert_callbacks.pop(flight_id, None)
+    _edge_telemetry_callbacks.pop(flight_id, None)
 
 
 def get_simulation(flight_id: Optional[str] = None) -> Optional[DroneSimulator]:

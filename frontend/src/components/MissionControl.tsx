@@ -14,12 +14,12 @@ const PRESETS = [
   {
     label: "Full Mission (SF to Oakland)",
     message:
-      "Execute a complete mission: 1) Create a corridor from San Francisco (37.7749, -122.4194) to Oakland (37.8044, -122.2712) at resolution 10 and validate it. 2) Start a simulation — the drone will fly automatically. 3) Monitor the flight: call check_block_membership 8 times (wait a moment between checks). If DEVIATING, call generate_correction. 4) Once the drone reaches the end or after monitoring, call complete_flight. 5) Verify chain integrity and generate a compliance certificate.",
+      "Execute a complete corridor mission as Mission Commander:\n1. Create a corridor from San Francisco (37.7749, -122.4194) to Oakland (37.8044, -122.2712) at resolution 10, validate it.\n2. Start the simulation — the drone flies autonomously with autopilot and the Edge Computer monitors it.\n3. Periodically call get_edge_status to check the strategic overview. Call get_pending_alerts to review any alerts from the edge. For each alert, decide on action and acknowledge it.\n4. When the flight completes (FLIGHT_COMPLETE alert), call complete_flight, verify chain integrity, calculate conformance, and generate certificate.\n5. Provide a mission summary.",
   },
   {
-    label: "Quick Demo (Short Corridor)",
+    label: "Quick Demo (Bay Bridge)",
     message:
-      "Create a corridor named 'Bay Bridge' from SF (37.7875, -122.3908) to Treasure Island (37.8235, -122.3708) at resolution 11. Validate it. Start simulation. The drone flies automatically — monitor it by calling check_block_membership 5 times. If deviating, apply correction. Then complete the flight and generate a certificate.",
+      "Create a corridor 'Bay Bridge' from SF (37.7875, -122.3908) to Treasure Island (37.8235, -122.3708) at resolution 11. Validate it. Start simulation. The Edge Computer monitors autonomously — check get_edge_status and get_pending_alerts a few times, acknowledge alerts, then complete the flight and certify.",
   },
   {
     label: "Create Corridor Only",
