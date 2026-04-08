@@ -5,14 +5,14 @@ import { EventType } from "../types";
 import type { AgentEvent } from "../types";
 
 const eventStyle: Record<string, { border: string; label: string; color: string }> = {
-  [EventType.Status]: { border: "border-gray-500", label: "Status", color: "text-gray-400" },
-  [EventType.Thinking]: { border: "border-purple-500", label: "Think", color: "text-purple-400" },
-  [EventType.ToolCall]: { border: "border-blue-500", label: "Tool", color: "text-blue-400" },
-  [EventType.ToolDone]: { border: "border-green-500", label: "Done", color: "text-green-400" },
-  [EventType.Content]: { border: "border-white/30", label: "Agent", color: "text-white" },
-  [EventType.Complete]: { border: "border-green-500", label: "Complete", color: "text-green-400" },
-  [EventType.Error]: { border: "border-red-500", label: "Error", color: "text-red-400" },
-  [EventType.SimulationUpdated]: { border: "border-yellow-500", label: "Sim", color: "text-yellow-400" },
+  [EventType.Status]: { border: "border-gray-400", label: "Status", color: "text-gray-500" },
+  [EventType.Thinking]: { border: "border-purple-400", label: "Think", color: "text-purple-600" },
+  [EventType.ToolCall]: { border: "border-blue-400", label: "Tool", color: "text-blue-600" },
+  [EventType.ToolDone]: { border: "border-green-400", label: "Done", color: "text-green-600" },
+  [EventType.Content]: { border: "border-gray-600", label: "Agent", color: "text-gray-700" },
+  [EventType.Complete]: { border: "border-green-500", label: "Complete", color: "text-green-600" },
+  [EventType.Error]: { border: "border-red-500", label: "Error", color: "text-red-600" },
+  [EventType.SimulationUpdated]: { border: "border-amber-400", label: "Sim", color: "text-amber-600" },
 };
 
 function eventSummary(e: AgentEvent): string {
@@ -47,10 +47,10 @@ export function EventFeed({ events }: { events: AgentEvent[] }) {
   }, [events]);
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800 overflow-hidden flex flex-col h-full">
-      <div className="px-4 py-3 bg-gray-900/80 border-b border-gray-800 flex items-center justify-between">
-        <span className="text-white font-medium text-sm">Event Feed</span>
-        <span className="text-xs text-gray-500">{events.length} events</span>
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col h-full shadow-sm">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+        <span className="text-gray-800 font-semibold text-sm">Event Feed</span>
+        <span className="text-xs text-gray-400">{events.length} events</span>
       </div>
       <div ref={ref} className="flex-1 overflow-y-auto p-3 space-y-1 font-mono text-xs">
         <AnimatePresence initial={false}>
@@ -63,15 +63,15 @@ export function EventFeed({ events }: { events: AgentEvent[] }) {
                 animate={{ opacity: 1, y: 0 }}
                 className={`border-l-2 ${style.border} pl-2 py-0.5`}
               >
-                <span className="text-gray-600 mr-2">{formatTime(e.timestamp)}</span>
-                <span className={`${style.color} mr-1`}>{style.label}</span>
-                <span className="text-gray-300">{eventSummary(e)}</span>
+                <span className="text-gray-400 mr-2">{formatTime(e.timestamp)}</span>
+                <span className={`${style.color} mr-1 font-medium`}>{style.label}</span>
+                <span className="text-gray-600">{eventSummary(e)}</span>
               </motion.div>
             );
           })}
         </AnimatePresence>
         {events.length === 0 && (
-          <div className="h-full flex items-center justify-center text-gray-600">
+          <div className="h-full flex items-center justify-center text-gray-400">
             Waiting for events...
           </div>
         )}

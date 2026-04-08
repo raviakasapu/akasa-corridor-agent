@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from .agent import CorridorAgent
 from agent_framework.composable.agents.events import AgentEvent, AgentEventType
+from .tools.simulation.engine import register_tick_callback, unregister_tick_callback
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class ExecuteRequest(BaseModel):
     job_id: str
     message: str
     model: Optional[str] = None
-    max_iterations: Optional[int] = 20
+    max_iterations: Optional[int] = 40
 
 
 class ExecuteResponse(BaseModel):
@@ -182,9 +183,28 @@ async def websocket_agent(websocket: WebSocket):
                     frontend_event = map_event_to_frontend(event, job_id)
                     await websocket.send_json(frontend_event)
 
-                    # Emit model_updated for simulation-modifying tools
+                    # When start_simulation completes, register tick callback
+                    # to push real-time position updates to the frontend
                     if event.type == AgentEventType.TOOL_RESULT:
                         tool_name = event.data.get("tool", "")
+                        result_data = event.data.get("result", {})
+
+                        if tool_name == "start_simulation" and isinstance(result_data, dict):
+                            flight_id = result_data.get("flight_id", "")
+                            if flight_id:
+                                async def make_tick_sender(ws=websocket):
+                                    async def send_tick(state: dict):
+                                        try:
+                                            await ws.send_json({
+                                                "event": "simulation_tick",
+                                                "data": state,
+                                                "timestamp": int(time.time() * 1000),
+                                            })
+                                        except Exception:
+                                            pass
+                                    return send_tick
+                                register_tick_callback(flight_id, await make_tick_sender())
+
                         if tool_name in (
                             "start_simulation", "step_simulation",
                             "generate_correction", "complete_flight",
@@ -225,7 +245,7 @@ async def execute_stream(request: ExecuteRequest):
     """SSE streaming endpoint for agent execution."""
     agent = CorridorAgent(
         job_id=request.job_id,
-        max_iterations=request.max_iterations or 20,
+        max_iterations=request.max_iterations or 40,
     )
 
     async def event_generator():
@@ -254,7 +274,7 @@ async def execute_sync(request: ExecuteRequest):
     """Synchronous endpoint - runs agent to completion."""
     agent = CorridorAgent(
         job_id=request.job_id,
-        max_iterations=request.max_iterations or 20,
+        max_iterations=request.max_iterations or 40,
     )
     result = await agent.run_to_completion(request.message)
     return ExecuteResponse(
@@ -284,7 +304,7 @@ async def run_mission(request: MissionRequest):
         f"6. Verify chain integrity and generate a compliance certificate"
     )
 
-    agent = CorridorAgent(job_id=request.job_id, max_iterations=30)
+    agent = CorridorAgent(job_id=request.job_id, max_iterations=40)
 
     async def event_generator():
         async for event in agent.run(mission_prompt):

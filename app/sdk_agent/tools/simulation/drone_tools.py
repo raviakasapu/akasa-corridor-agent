@@ -1,27 +1,28 @@
 """Drone simulation tools — exposed to agents via @tool decorator."""
 
+import asyncio
 from typing import Any, Dict
 from ..registry import tool
 from .engine import (
     DroneSimulator, create_digital_rail, get_simulation, get_corridor,
     list_corridors as _list_corridors, _active_simulations, _corridors,
-    latlng_to_cell, cell_to_latlng,
+    latlng_to_cell, cell_to_latlng, run_simulation_loop,
 )
 
 
 @tool(
     name="start_simulation",
-    description="Start a drone flight simulation on a corridor. The drone will begin at the first block of the digital rail.",
+    description="Start a drone flight simulation on a corridor. The drone flies automatically in the background — you do NOT need to step it. Use check_block_membership and get_drone_position to observe it.",
     parameters={
         "type": "object",
         "properties": {
             "corridor_id": {"type": "string", "description": "Corridor ID to fly"},
-            "speed_mps": {"type": "number", "description": "Drone speed in m/s (default 15)"},
+            "speed_mps": {"type": "number", "description": "Drone speed in m/s (default 80)."},
         },
         "required": ["corridor_id"],
     },
 )
-def start_simulation(corridor_id: str, speed_mps: float = 15.0) -> Dict[str, Any]:
+def start_simulation(corridor_id: str, speed_mps: float = 80.0) -> Dict[str, Any]:
     corridor = get_corridor(corridor_id)
     if not corridor:
         return {"error": f"Corridor '{corridor_id}' not found. Use create_corridor first."}
@@ -34,27 +35,35 @@ def start_simulation(corridor_id: str, speed_mps: float = 15.0) -> Dict[str, Any
     )
     result = sim.start()
     _active_simulations[sim.flight_id] = sim
+
+    # Start background simulation loop
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(run_simulation_loop(sim, tick_interval=0.3))
+    except RuntimeError:
+        pass  # No event loop — sim will be stepped manually in tests
+
     return result
 
 
 @tool(
     name="step_simulation",
-    description="Advance the drone simulation by one time step (0.5s). Returns position, block membership, and deviation status.",
+    description="Manually advance the drone simulation (only needed if auto-simulation is not running). Returns current position and status.",
     parameters={
         "type": "object",
         "properties": {
             "flight_id": {"type": "string", "description": "Flight ID (optional, uses latest if omitted)"},
-            "steps": {"type": "integer", "description": "Number of steps to advance (default 1, max 20)"},
+            "steps": {"type": "integer", "description": "Number of steps to advance (default 20, max 100)."},
         },
         "required": [],
     },
 )
-def step_simulation(flight_id: str = "", steps: int = 1) -> Dict[str, Any]:
+def step_simulation(flight_id: str = "", steps: int = 20) -> Dict[str, Any]:
     sim = get_simulation(flight_id if flight_id else None)
     if not sim:
         return {"error": "No active simulation. Use start_simulation first."}
 
-    steps = min(max(steps, 1), 20)
+    steps = min(max(steps, 1), 100)
     state = None
     for _ in range(steps):
         state = sim.step(dt=0.5)
@@ -65,7 +74,7 @@ def step_simulation(flight_id: str = "", steps: int = 1) -> Dict[str, Any]:
 
 @tool(
     name="get_drone_position",
-    description="Get the current simulated drone position (lat, lon, alt) and navigation state.",
+    description="Get the current simulated drone position (lat, lon, alt), navigation state, and flight progress. The drone moves automatically — call this to observe its current location.",
     parameters={
         "type": "object",
         "properties": {
@@ -83,8 +92,10 @@ def get_drone_position(flight_id: str = "") -> Dict[str, Any]:
         "flight_id": sim.flight_id,
         "position": sim.position.to_dict(),
         "assigned_block": sim.assigned_block,
+        "current_block": latlng_to_cell(sim.position.lat, sim.position.lon, sim.resolution) if sim.is_active or sim.is_complete else None,
         "block_index": sim.current_block_index,
         "total_blocks": len(sim.rail),
+        "status": "COMPLETE" if sim.is_complete else "ACTIVE" if sim.is_active else "INACTIVE",
         "is_active": sim.is_active,
         "is_complete": sim.is_complete,
     }
@@ -92,7 +103,7 @@ def get_drone_position(flight_id: str = "") -> Dict[str, Any]:
 
 @tool(
     name="check_block_membership",
-    description="CORE PATENT CHECK: Resolve drone's satellite position to a geocode block and compare to assigned block. Returns match status and deviation distance.",
+    description="CORE PATENT CHECK: Resolve drone's satellite position to a geocode block and compare to assigned block. Returns match status and deviation distance. The drone flies automatically — this is a read-only observation.",
     parameters={
         "type": "object",
         "properties": {
@@ -118,13 +129,14 @@ def check_block_membership(flight_id: str = "") -> Dict[str, Any]:
 
     return {
         "flight_id": sim.flight_id,
+        "position": sim.position.to_dict(),
         "current_block": current_cell,
         "assigned_block": assigned,
         "is_match": is_match,
         "deviation_meters": round(deviation, 2),
         "block_index": sim.current_block_index,
         "total_blocks": len(sim.rail),
-        "status": "NOMINAL" if is_match else "DEVIATING",
+        "status": "COMPLETE" if sim.is_complete else "NOMINAL" if is_match else "DEVIATING",
     }
 
 
@@ -240,3 +252,45 @@ def emergency_land(flight_id: str = "") -> Dict[str, Any]:
     if not sim:
         return {"error": "No active simulation."}
     return sim.emergency_land()
+
+
+@tool(
+    name="set_correction_strength",
+    description="Adjust the autopilot's correction aggressiveness. The drone self-corrects when deviating — this controls how strongly. 0.0 = no correction (drift freely), 0.3 = default, 1.0 = snap to center immediately.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "strength": {"type": "number", "description": "Correction strength (0.0 to 1.0)"},
+        },
+        "required": ["strength"],
+    },
+)
+def set_correction_strength(strength: float) -> Dict[str, Any]:
+    sim = get_simulation()
+    if not sim:
+        return {"error": "No active simulation."}
+    return sim.set_correction_strength(strength)
+
+
+@tool(
+    name="get_environment_state",
+    description="Get current environmental conditions: wind direction/speed, GPS noise level, and turbulence intensity. Read-only observation of what the drone is experiencing.",
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+def get_environment_state() -> Dict[str, Any]:
+    sim = get_simulation()
+    if not sim:
+        return {"error": "No active simulation."}
+    env = sim.environment
+    return {
+        "wind_direction_deg": round(env.wind_direction_deg, 1),
+        "wind_speed_mps": round(env.wind_speed_mps, 2),
+        "gps_noise_meters": round(env.gps_noise_magnitude, 2),
+        "turbulence_intensity": round(env.turbulence_intensity, 3),
+        "autopilot_correction_strength": sim.autopilot.correction_strength,
+        "cumulative_corrections": sim.autopilot.cumulative_corrections,
+    }

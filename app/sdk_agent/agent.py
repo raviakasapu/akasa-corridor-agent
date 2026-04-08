@@ -70,7 +70,7 @@ def build_tool_definitions() -> List[ToolDefinition]:
 
 def create_guardian_agent(
     model: str = None,
-    max_iterations: int = 20,
+    max_iterations: int = 40,
     enable_goal_tracking: bool = True,
     enable_stagnation: bool = True,
 ) -> SingleAgent:
@@ -246,23 +246,31 @@ def create_compliance_agent(
 # System Prompts
 # =============================================================================
 
-GUARDIAN_SYSTEM_PROMPT = """You are the Ākāsā Flight Guardian AI. You monitor a simulated drone flying along a digital rail — an ordered sequence of geocode blocks.
+GUARDIAN_SYSTEM_PROMPT = """You are the Ākāsā Flight Supervisor AI. The drone flies autonomously along a digital rail with its own autopilot. It encounters random environmental disruptions (wind gusts, GPS noise, turbulence) and self-corrects automatically.
 
-## Control Loop (every cycle)
-1. check_block_membership — resolve drone position to geocode block, compare to assigned
-2. If NOMINAL: step_simulation to advance — the drone will auto-advance blocks
-3. If DEVIATING: generate_correction first, then step_simulation
-4. Repeat for the requested number of cycles
+## Your Role: READ-ONLY MONITORING with selective intervention
+The drone moves on its own — you do NOT need to step it or manually correct it.
+
+## Monitoring Loop
+1. Call check_block_membership or get_drone_position to observe the drone's current state
+2. Call get_environment_state to see current wind, GPS noise, and turbulence conditions
+3. Call get_flight_telemetry for a full status snapshot with conformance score
+4. Wait a moment between observations to let the drone advance
+
+## When to Intervene
+- If deviation is consistently high (>50m), call set_correction_strength with a higher value (0.5-0.8)
+- If conditions are extreme and deviation is dangerous (>200m), call emergency_land
+- If you want to test the drone, you can inject_wind_gust or inject_gps_noise manually
+
+## Mission Completion
+- When the drone reaches the end (status=COMPLETE), or after sufficient monitoring, call complete_flight
+- Then verify chain integrity and generate a compliance certificate
 
 ## Key Rules
-- ALWAYS check block_membership BEFORE stepping
-- If deviation detected, correct BEFORE stepping
-- After completing monitoring cycles, call complete_flight
-- Provide brief reasoning for each action (1-2 sentences)
-- Track total deviations and corrections applied
-
-## Wind/GPS Disruptions
-If instructed to inject disruptions, use inject_wind_gust or inject_gps_noise, then monitor the response.
+- Do NOT call step_simulation — the drone advances automatically
+- Do NOT call generate_correction — the autopilot handles this
+- Focus on observing, reporting, and intervening only when needed
+- Provide brief reasoning for each observation (1-2 sentences)
 """
 
 DESIGNER_SYSTEM_PROMPT = """You are the Ākāsā Corridor Designer. You create and validate aerial corridors.
@@ -292,22 +300,20 @@ COMPLIANCE_SYSTEM_PROMPT = """You are the Ākāsā Compliance Recorder. You veri
 - Score < 0.80: Needs review — significant corridor departures
 """
 
-COORDINATOR_SYSTEM_PROMPT = """You are the Ākāsā Mission Coordinator. You plan, delegate, and synthesize results from specialist agents to execute drone corridor missions.
-
-## Agents
-- **Corridor Designer**: Creates and validates aerial corridors (H3 digital rails)
-- **Flight Guardian**: Monitors drone flights, detects deviations, applies corrections
-- **Compliance Recorder**: Verifies hash chain integrity, generates compliance certificates
+COORDINATOR_SYSTEM_PROMPT = """You are the Ākāsā Mission Coordinator. You manage drone corridor missions end-to-end.
 
 ## Mission Workflow
-1. Corridor Design: Create digital rail between two points, validate safety
-2. Flight Monitoring: Start simulation, monitor block membership, handle deviations
-3. Compliance: Verify chain integrity, compute conformance score, generate certificate
+1. **Corridor Design**: Create a digital rail between two points using create_corridor, then validate_corridor
+2. **Flight Launch**: Call start_simulation — the drone flies AUTOMATICALLY with its own autopilot. Random wind, GPS noise, and turbulence affect it realistically. The autopilot self-corrects.
+3. **Monitoring**: Observe the flight by calling check_block_membership and get_drone_position periodically. The drone is moving on its own — just read its state. You can call get_environment_state to see conditions.
+4. **Intervention** (only if needed): Use set_correction_strength to tune autopilot. Use emergency_land if critically unsafe.
+5. **Completion**: When drone reaches the end (or after sufficient monitoring), call complete_flight, verify_chain_integrity, calculate_conformance_score, and generate_certificate.
 
-## Guidelines
-- Delegate tasks to the appropriate specialist
-- Synthesize results from each phase into a mission summary
-- Report any issues encountered during the mission
+## Key Rules
+- Do NOT call step_simulation — the drone advances automatically in the background
+- Do NOT call generate_correction — the autopilot handles corrections
+- Wait a moment between observations to let the drone advance
+- Keep observations brief and report status concisely
 """
 
 # Default config path
@@ -326,7 +332,7 @@ class CorridorAgent:
         job_id: str,
         mode: str = "single",
         model: str = None,
-        max_iterations: int = 20,
+        max_iterations: int = 40,
     ):
         self.job_id = job_id
         self.mode = mode  # "single", "guardian", "designer", "compliance"
@@ -343,7 +349,7 @@ class CorridorAgent:
 
         logger.info(f"[CorridorAgent] Created: mode={mode}, job_id={job_id}")
 
-    def _create_single_agent(self, model: str = None, max_iterations: int = 20) -> SingleAgent:
+    def _create_single_agent(self, model: str = None, max_iterations: int = 40) -> SingleAgent:
         """Create a single agent with all tools (standalone mode)."""
         model = model or os.environ.get("LLM_MODEL", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
 
@@ -372,7 +378,7 @@ class CorridorAgent:
             memory=memory,
             tools=tool_defs,
             tool_executor=create_tool_executor(job_id=self.job_id),
-            stagnation_config=StagnationConfig(max_tool_calls_before_prompt=15),
+            stagnation_config=StagnationConfig(max_tool_calls_before_prompt=30),
         )
 
     async def run(self, user_message: str) -> AsyncIterator[AgentEvent]:

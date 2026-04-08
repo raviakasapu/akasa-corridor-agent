@@ -10,6 +10,7 @@ export enum EventType {
   Complete = "complete",
   Error = "error",
   SimulationUpdated = "simulation_updated",
+  SimulationTick = "simulation_tick",
   Pong = "pong",
 }
 
@@ -17,6 +18,19 @@ export interface Position {
   lat: number;
   lon: number;
   alt: number;
+}
+
+export interface EnvironmentData {
+  wind_direction_deg: number;
+  wind_speed_mps: number;
+  gps_noise_meters: number;
+  turbulence_intensity: number;
+}
+
+export interface AutopilotData {
+  correction_applied: boolean;
+  correction_strength: number;
+  cumulative_corrections: number;
 }
 
 export interface Drone {
@@ -30,6 +44,10 @@ export interface Drone {
   status: "NOMINAL" | "DEVIATING" | "COMPLETE" | "EMERGENCY";
   speed: number;
   deviationMeters: number;
+  progressPercent: number;
+  elapsedSeconds: number;
+  environment?: EnvironmentData;
+  autopilot?: AutopilotData;
 }
 
 export interface Corridor {

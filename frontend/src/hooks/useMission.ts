@@ -43,29 +43,52 @@ export function useMission() {
         }
 
         case EventType.ToolDone: {
+          // Parse result — framework may send it as a JSON string or object
+          let rawResult = event.data.result;
+          if (typeof rawResult === "string") {
+            try {
+              rawResult = JSON.parse(rawResult);
+            } catch {
+              rawResult = {};
+            }
+          }
+          const parsedResult = (rawResult as Record<string, unknown>) || {};
+
           const tr: ToolResult = {
             tool: (event.data.tool as string) || "",
             success: (event.data.success as boolean) ?? true,
             summary: (event.data.summary as string) || "",
-            result: (event.data.result as Record<string, unknown>) || {},
+            result: parsedResult,
             toolId: (event.data.tool_id as string) || "",
           };
           store.addToolResult(tr);
+
+          // Debug: log simulation tool results
+          if (
+            tr.tool === "step_simulation" ||
+            tr.tool === "check_block_membership" ||
+            tr.tool === "create_corridor"
+          ) {
+            console.log(`[useMission] ${tr.tool} result:`, parsedResult);
+          }
 
           // Extract drone state from simulation tools
           const result = tr.result;
           if (
             tr.tool === "check_block_membership" ||
             tr.tool === "step_simulation" ||
-            tr.tool === "get_drone_position"
+            tr.tool === "get_drone_position" ||
+            tr.tool === "start_simulation"
           ) {
             if (result.flight_id) {
               const drone: Partial<Drone> = {
                 flightId: result.flight_id as string,
                 status: (result.status as Drone["status"]) || "NOMINAL",
               };
-              if (result.position && typeof result.position === "object") {
-                const pos = result.position as Record<string, number>;
+              // Position may be in "position" or "start_position" field
+              const posData = result.position || result.start_position;
+              if (posData && typeof posData === "object") {
+                const pos = posData as Record<string, number>;
                 drone.position = {
                   lat: pos.lat,
                   lon: pos.lon,
@@ -88,14 +111,20 @@ export function useMission() {
 
           // Extract corridor from create_corridor
           if (tr.tool === "create_corridor" && result.corridor_id) {
+            const start = result.start as Record<string, number> | undefined;
+            const end = result.end as Record<string, number> | undefined;
             store.setCorridor({
               corridorId: result.corridor_id as string,
               name: (result.name as string) || "",
-              start: { lat: 0, lon: 0, alt: 0 },
-              end: { lat: 0, lon: 0, alt: 0 },
+              start: start
+                ? { lat: start.lat, lon: start.lon, alt: start.alt || 0 }
+                : { lat: 0, lon: 0, alt: 0 },
+              end: end
+                ? { lat: end.lat, lon: end.lon, alt: end.alt || 0 }
+                : { lat: 0, lon: 0, alt: 0 },
               blockCount: (result.block_count as number) || 0,
               resolution: (result.resolution as number) || 10,
-              rail: [],
+              rail: (result.rail as string[]) || [],
             });
             store.setMissionStatus("running");
           }
@@ -129,8 +158,33 @@ export function useMission() {
           store.setMissionStatus("error");
           break;
 
+        case EventType.SimulationTick: {
+          // Real-time position update from background simulation
+          const tickData = event.data;
+          if (tickData.flight_id || tickData.position) {
+            const drone: Partial<Drone> = {};
+            if (tickData.flight_id) drone.flightId = tickData.flight_id as string;
+            if (tickData.status) drone.status = tickData.status as Drone["status"];
+            if (tickData.position && typeof tickData.position === "object") {
+              const pos = tickData.position as Record<string, number>;
+              drone.position = { lat: pos.lat, lon: pos.lon, alt: pos.alt || 100 };
+            }
+            if (tickData.assigned_block) drone.assignedBlock = tickData.assigned_block as string;
+            if (tickData.current_block) drone.currentBlock = tickData.current_block as string;
+            if (tickData.block_index !== undefined) drone.blockIndex = tickData.block_index as number;
+            if (tickData.total_blocks !== undefined) drone.totalBlocks = tickData.total_blocks as number;
+            if (tickData.deviation_meters !== undefined) drone.deviationMeters = tickData.deviation_meters as number;
+            if (tickData.progress_percent !== undefined) drone.progressPercent = tickData.progress_percent as number;
+            if (tickData.elapsed_seconds !== undefined) drone.elapsedSeconds = tickData.elapsed_seconds as number;
+            if (tickData.environment) drone.environment = tickData.environment as Drone["environment"];
+            if (tickData.autopilot) drone.autopilot = tickData.autopilot as Drone["autopilot"];
+            store.updateDrone(drone);
+          }
+          break;
+        }
+
         case EventType.SimulationUpdated:
-          // Trigger map refresh — drone state already updated via tool_done
+          // Trigger map refresh — drone state already updated via tick/tool_done
           break;
       }
     },

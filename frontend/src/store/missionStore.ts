@@ -25,6 +25,7 @@ interface MissionState {
 
   // Drone
   drone: Drone | null;
+  flightTrail: [number, number][];
   updateDrone: (d: Partial<Drone>) => void;
 
   // Corridor
@@ -98,14 +99,23 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     set({
       mission: { ...defaultMission },
       drone: null,
+      flightTrail: [],
       corridor: null,
       events: [],
       agent: { ...defaultAgent },
     }),
 
   drone: null,
+  flightTrail: [],
   updateDrone: (d) =>
-    set((s) => ({ drone: s.drone ? { ...s.drone, ...d } : (d as Drone) })),
+    set((s) => {
+      const updated = s.drone ? { ...s.drone, ...d } : (d as Drone);
+      const trail = [...s.flightTrail];
+      if (updated.position && updated.position.lat !== 0) {
+        trail.push([updated.position.lat, updated.position.lon]);
+      }
+      return { drone: updated, flightTrail: trail };
+    }),
 
   corridor: null,
   setCorridor: (c) => set({ corridor: c }),

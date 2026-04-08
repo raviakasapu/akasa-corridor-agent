@@ -31,6 +31,8 @@ def create_corridor(
     end_lat: float, end_lon: float,
     resolution: int = 10,
 ) -> Dict[str, Any]:
+    # H3 only supports resolutions 0-15
+    resolution = max(0, min(resolution, 15))
     corridor_id = f"COR-{uuid.uuid4().hex[:8].upper()}"
     rail = create_digital_rail(start_lat, start_lon, end_lat, end_lon, resolution)
 
@@ -49,7 +51,10 @@ def create_corridor(
     return {
         "corridor_id": corridor_id,
         "name": name,
+        "start": {"lat": start_lat, "lon": start_lon},
+        "end": {"lat": end_lat, "lon": end_lon},
         "block_count": len(rail),
+        "rail": rail,
         "first_block": rail[0] if rail else None,
         "last_block": rail[-1] if rail else None,
         "resolution": resolution,

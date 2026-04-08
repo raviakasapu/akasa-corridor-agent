@@ -68,6 +68,27 @@ class Vector3:
 
 
 @dataclass
+class EnvironmentState:
+    """Current environmental conditions affecting the drone."""
+    wind_direction_deg: float = 0.0
+    wind_speed_mps: float = 0.0
+    wind_gust_timer: float = 3.0
+    gps_noise_magnitude: float = 0.0
+    gps_noise_timer: float = 5.0
+    turbulence_intensity: float = 0.0
+    turbulence_timer: float = 2.0
+
+
+@dataclass
+class AutopilotState:
+    """Autopilot correction state."""
+    correction_strength: float = 0.3
+    correction_applied_this_step: bool = False
+    correction_vector: Dict[str, float] = field(default_factory=dict)
+    cumulative_corrections: int = 0
+
+
+@dataclass
 class BlockTransitionEvent:
     """Event: drone transitioned from one block to another."""
     event_type: str  # BLOCK_TRANSITION, DEVIATION, CORRECTION, FLIGHT_START, FLIGHT_END
@@ -306,6 +327,20 @@ class DroneSimulator:
         self.wind = Vector3()
         self.gps_noise_magnitude = 0.0
 
+        # Environment & autopilot (realistic simulation)
+        self.environment = EnvironmentState()
+        self.autopilot = AutopilotState()
+        self.environment_enabled = True
+
+        # Realistic simulation constants
+        self.WIND_CHANGE_INTERVAL = (3.0, 8.0)
+        self.WIND_SPEED_RANGE = (0.0, 4.0)
+        self.GPS_NOISE_CHANGE_INTERVAL = (5.0, 15.0)
+        self.GPS_NOISE_RANGE = (0.0, 2.5)
+        self.TURBULENCE_CHANGE_INTERVAL = (2.0, 6.0)
+        self.TURBULENCE_INTENSITY_RANGE = (0.0, 0.3)
+        self.DEVIATION_CORRECTION_THRESHOLD_M = 15.0
+
         # Ledger
         self.ledger = FlightLedger(self.flight_id)
 
@@ -338,35 +373,155 @@ class DroneSimulator:
             "total_blocks": len(self.rail),
         }
 
+    def _update_environment(self, dt: float) -> None:
+        """Randomly update environmental conditions (wind, GPS noise, turbulence)."""
+        if not self.environment_enabled:
+            return
+
+        env = self.environment
+
+        # Wind gusts: change direction and speed periodically
+        env.wind_gust_timer -= dt
+        if env.wind_gust_timer <= 0:
+            env.wind_direction_deg = random.uniform(0, 360)
+            env.wind_speed_mps = random.uniform(*self.WIND_SPEED_RANGE)
+            env.wind_gust_timer = random.uniform(*self.WIND_CHANGE_INTERVAL)
+            rad = math.radians(env.wind_direction_deg)
+            self.wind = Vector3(
+                dlat=math.cos(rad) * env.wind_speed_mps * 0.000009,
+                dlon=math.sin(rad) * env.wind_speed_mps * 0.000009,
+            )
+
+        # GPS noise: fluctuate magnitude
+        env.gps_noise_timer -= dt
+        if env.gps_noise_timer <= 0:
+            env.gps_noise_magnitude = random.uniform(*self.GPS_NOISE_RANGE)
+            self.gps_noise_magnitude = env.gps_noise_magnitude
+            env.gps_noise_timer = random.uniform(*self.GPS_NOISE_CHANGE_INTERVAL)
+
+        # Turbulence intensity
+        env.turbulence_timer -= dt
+        if env.turbulence_timer <= 0:
+            env.turbulence_intensity = random.uniform(*self.TURBULENCE_INTENSITY_RANGE)
+            env.turbulence_timer = random.uniform(*self.TURBULENCE_CHANGE_INTERVAL)
+
+    def _apply_turbulence(self, dt: float) -> None:
+        """Apply random position jitter from turbulence."""
+        intensity = self.environment.turbulence_intensity
+        if intensity > 0:
+            self.true_position.lat += random.gauss(0, intensity * 0.000005 * dt)
+            self.true_position.lon += random.gauss(0, intensity * 0.000005 * dt)
+            self.true_position.alt += random.gauss(0, intensity * 0.5 * dt)
+            # Clamp altitude
+            self.true_position.alt = max(50.0, min(200.0, self.true_position.alt))
+
+    def _apply_autopilot_correction(self, is_match: bool, deviation_m: float) -> None:
+        """Autopilot self-correction: only when drone has LEFT its assigned block.
+
+        Corrects laterally toward the assigned block center, but does NOT
+        fight forward movement along the rail. This mimics a real autopilot
+        that maintains the flight path corridor without slowing progress.
+        """
+        self.autopilot.correction_applied_this_step = False
+        self.autopilot.correction_vector = {}
+
+        # Only correct when the drone has actually left its assigned H3 cell
+        if is_match:
+            return
+
+        # Only correct if deviation is significant
+        if deviation_m <= self.DEVIATION_CORRECTION_THRESHOLD_M:
+            return
+
+        # Compute correction toward assigned block center
+        target_lat, target_lon = cell_to_latlng(self.assigned_block)
+        dlat = target_lat - self.true_position.lat
+        dlon = target_lon - self.true_position.lon
+
+        # Project out the forward component: only correct the lateral drift
+        # Forward direction is toward next block
+        next_idx = min(self.current_block_index + 1, len(self.rail) - 1)
+        fwd_lat, fwd_lon = cell_to_latlng(self.rail[next_idx])
+        fwd_dlat = fwd_lat - self.true_position.lat
+        fwd_dlon = fwd_lon - self.true_position.lon
+        fwd_mag = math.sqrt(fwd_dlat ** 2 + fwd_dlon ** 2)
+
+        if fwd_mag > 1e-10:
+            # Normalize forward vector
+            fwd_dlat /= fwd_mag
+            fwd_dlon /= fwd_mag
+            # Remove forward component from correction (keep only lateral)
+            dot = dlat * fwd_dlat + dlon * fwd_dlon
+            dlat -= dot * fwd_dlat
+            dlon -= dot * fwd_dlon
+
+        strength = self.autopilot.correction_strength
+        corr_lat = dlat * strength
+        corr_lon = dlon * strength
+        self.true_position.lat += corr_lat
+        self.true_position.lon += corr_lon
+
+        self.autopilot.correction_applied_this_step = True
+        self.autopilot.correction_vector = {
+            "dlat": round(corr_lat, 10),
+            "dlon": round(corr_lon, 10),
+            "strength": strength,
+        }
+        self.autopilot.cumulative_corrections += 1
+
+        event = BlockTransitionEvent(
+            event_type="CORRECTION",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            block_index=self.current_block_index,
+            departing_block=None,
+            arriving_block=self.assigned_block,
+            position=self.true_position.to_dict(),
+            deviation_meters=deviation_m,
+            metadata={"correction_strength": strength, "auto": True},
+        )
+        self.ledger.record_event(event)
+
+    def set_correction_strength(self, strength: float) -> Dict[str, Any]:
+        """LLM supervisor can override autopilot correction strength (0.0-1.0)."""
+        strength = max(0.0, min(1.0, strength))
+        self.autopilot.correction_strength = strength
+        return {"correction_strength": strength, "message": f"Correction strength set to {strength}"}
+
     def step(self, dt: float = 0.5) -> Dict[str, Any]:
         """Advance simulation by dt seconds. Returns current state."""
         if not self.is_active or self.is_complete:
-            return {"status": "INACTIVE", "message": "Simulation not active"}
+            return {"flight_id": self.flight_id, "status": "INACTIVE", "message": "Simulation not active"}
 
+        # Clamp dt to prevent physics jumps
+        dt = min(dt, 1.5)
         self.step_count += 1
 
-        # Target: center of next block (or current if at last)
+        # 1. Update environment (random wind, GPS noise, turbulence)
+        self._update_environment(dt)
+
+        # 2. Move toward next block center
         target_idx = min(self.current_block_index + 1, len(self.rail) - 1)
         target_lat, target_lon = cell_to_latlng(self.rail[target_idx])
 
-        # Move toward target
         dlat = (target_lat - self.true_position.lat)
         dlon = (target_lon - self.true_position.lon)
         dist = math.sqrt(dlat ** 2 + dlon ** 2)
 
         if dist > 1e-8:
-            # Normalize and scale by speed (approximate: 1 degree ≈ 111km)
             scale = (self.speed * dt) / (dist * 111000)
-            scale = min(scale, 1.0)  # Don't overshoot
+            scale = min(scale, 1.0)
             self.true_position.lat += dlat * scale
             self.true_position.lon += dlon * scale
 
-        # Apply wind
+        # 3. Apply wind displacement
         self.true_position.lat += self.wind.dlat * dt
         self.true_position.lon += self.wind.dlon * dt
         self.true_position.alt += self.wind.dalt * dt
 
-        # GPS reading (true position + noise)
+        # 4. Apply turbulence jitter
+        self._apply_turbulence(dt)
+
+        # 5. GPS reading (true position + noise)
         noise_lat = random.gauss(0, self.gps_noise_magnitude * 0.00001) if self.gps_noise_magnitude > 0 else 0
         noise_lon = random.gauss(0, self.gps_noise_magnitude * 0.00001) if self.gps_noise_magnitude > 0 else 0
         self.position = Position(
@@ -375,46 +530,53 @@ class DroneSimulator:
             alt=self.true_position.alt,
         )
 
-        # Core patent check: resolve position to geocode block
+        # 6. Core patent check: resolve position to geocode block
         current_cell = latlng_to_cell(self.position.lat, self.position.lon, self.resolution)
         is_match = current_cell == self.assigned_block
 
-        # Calculate deviation
         assigned_center = cell_to_latlng(self.assigned_block)
         deviation = self.position.distance_to(
             Position(lat=assigned_center[0], lon=assigned_center[1])
         )
 
-        # Block transition or deviation event
-        if is_match:
-            # Check if we should advance to next block
-            if self.current_block_index < len(self.rail) - 1:
-                next_center = cell_to_latlng(self.rail[self.current_block_index + 1])
-                dist_to_next = self.position.distance_to(
-                    Position(lat=next_center[0], lon=next_center[1])
+        # 7. Block transition: advance when closer to next block than current
+        if self.current_block_index < len(self.rail) - 1:
+            next_center = cell_to_latlng(self.rail[self.current_block_index + 1])
+            dist_to_next = self.position.distance_to(
+                Position(lat=next_center[0], lon=next_center[1])
+            )
+            dist_to_current = deviation
+            edge_len = cell_edge_length_m(self.resolution)
+            if dist_to_next < dist_to_current or dist_to_next < edge_len:
+                old_block = self.assigned_block
+                self.current_block_index += 1
+                self.assigned_block = self.rail[self.current_block_index]
+
+                current_cell = latlng_to_cell(self.position.lat, self.position.lon, self.resolution)
+                is_match = current_cell == self.assigned_block
+                assigned_center = cell_to_latlng(self.assigned_block)
+                deviation = self.position.distance_to(
+                    Position(lat=assigned_center[0], lon=assigned_center[1])
                 )
-                edge_len = cell_edge_length_m(self.resolution)
-                if dist_to_next < edge_len * 0.8:
-                    # Advance
-                    old_block = self.assigned_block
-                    self.current_block_index += 1
-                    self.assigned_block = self.rail[self.current_block_index]
 
-                    event = BlockTransitionEvent(
-                        event_type="BLOCK_TRANSITION",
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        block_index=self.current_block_index,
-                        departing_block=old_block,
-                        arriving_block=self.assigned_block,
-                        position=self.position.to_dict(),
-                    )
-                    self.ledger.record_event(event)
+                event = BlockTransitionEvent(
+                    event_type="BLOCK_TRANSITION",
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    block_index=self.current_block_index,
+                    departing_block=old_block,
+                    arriving_block=self.assigned_block,
+                    position=self.position.to_dict(),
+                )
+                self.ledger.record_event(event)
 
-                    # Check if flight complete
-                    if self.current_block_index >= len(self.rail) - 1:
-                        self._complete_flight()
-        else:
-            # Deviation!
+                if self.current_block_index >= len(self.rail) - 1:
+                    self._complete_flight()
+
+        # 8. Autopilot self-correction (only when drone has left its assigned block)
+        self._apply_autopilot_correction(is_match, deviation)
+
+        # 9. Record deviation event (after autopilot, so we see the pre-correction state)
+        if not is_match and not self.is_complete:
             event = BlockTransitionEvent(
                 event_type="DEVIATION",
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -426,18 +588,32 @@ class DroneSimulator:
             )
             self.ledger.record_event(event)
 
+        elapsed = time.time() - self.start_time if self.start_time else 0
+
         return {
+            "flight_id": self.flight_id,
             "step": self.step_count,
             "position": self.position.to_dict(),
-            "current_cell": current_cell,
+            "current_block": current_cell,
             "assigned_block": self.assigned_block,
             "block_index": self.current_block_index,
             "total_blocks": len(self.rail),
             "is_match": is_match,
             "deviation_meters": round(deviation, 2),
             "status": "COMPLETE" if self.is_complete else "NOMINAL" if is_match else "DEVIATING",
-            "wind": {"dlat": self.wind.dlat, "dlon": self.wind.dlon},
-            "gps_noise": self.gps_noise_magnitude,
+            "progress_percent": round((self.current_block_index / max(len(self.rail) - 1, 1)) * 100, 1),
+            "elapsed_seconds": round(elapsed, 1),
+            "environment": {
+                "wind_direction_deg": round(self.environment.wind_direction_deg, 1),
+                "wind_speed_mps": round(self.environment.wind_speed_mps, 2),
+                "gps_noise_meters": round(self.environment.gps_noise_magnitude, 2),
+                "turbulence_intensity": round(self.environment.turbulence_intensity, 3),
+            },
+            "autopilot": {
+                "correction_applied": self.autopilot.correction_applied_this_step,
+                "correction_strength": self.autopilot.correction_strength,
+                "cumulative_corrections": self.autopilot.cumulative_corrections,
+            },
         }
 
     def apply_correction(self, target_block: str) -> Dict[str, Any]:
@@ -557,6 +733,78 @@ class DroneSimulator:
 
 _active_simulations: Dict[str, DroneSimulator] = {}
 _corridors: Dict[str, Dict[str, Any]] = {}
+
+# Callbacks for pushing simulation ticks to clients
+_tick_callbacks: Dict[str, Any] = {}  # flight_id -> async callback
+
+
+async def run_simulation_loop(
+    sim: DroneSimulator,
+    tick_interval: float = 0.3,
+) -> None:
+    """Run the simulation in a background async loop.
+
+    Advances the drone automatically with realistic physics and pushes
+    position updates to the frontend via registered tick callback.
+    """
+    import asyncio
+
+    last_time = time.monotonic()
+
+    while sim.is_active and not sim.is_complete:
+        now = time.monotonic()
+        dt = now - last_time
+        last_time = now
+
+        state = sim.step(dt=dt)
+
+        callback = _tick_callbacks.get(sim.flight_id)
+        if callback:
+            try:
+                await callback(state)
+            except Exception:
+                pass
+
+        await asyncio.sleep(tick_interval)
+
+    # Final tick with full state
+    final_state = {
+        "flight_id": sim.flight_id,
+        "position": sim.position.to_dict(),
+        "block_index": sim.current_block_index,
+        "total_blocks": len(sim.rail),
+        "status": "COMPLETE",
+        "deviation_meters": 0,
+        "assigned_block": sim.assigned_block,
+        "current_block": sim.assigned_block,
+        "progress_percent": 100.0,
+        "elapsed_seconds": round(time.time() - sim.start_time, 1) if sim.start_time else 0,
+        "environment": {
+            "wind_direction_deg": 0, "wind_speed_mps": 0,
+            "gps_noise_meters": 0, "turbulence_intensity": 0,
+        },
+        "autopilot": {
+            "correction_applied": False,
+            "correction_strength": sim.autopilot.correction_strength,
+            "cumulative_corrections": sim.autopilot.cumulative_corrections,
+        },
+    }
+    callback = _tick_callbacks.get(sim.flight_id)
+    if callback:
+        try:
+            await callback(final_state)
+        except Exception:
+            pass
+
+
+def register_tick_callback(flight_id: str, callback) -> None:
+    """Register an async callback for simulation tick events."""
+    _tick_callbacks[flight_id] = callback
+
+
+def unregister_tick_callback(flight_id: str) -> None:
+    """Remove tick callback."""
+    _tick_callbacks.pop(flight_id, None)
 
 
 def get_simulation(flight_id: Optional[str] = None) -> Optional[DroneSimulator]:

@@ -12,9 +12,14 @@ interface Props {
 
 const PRESETS = [
   {
-    label: "Full Mission (SF → Oakland)",
+    label: "Full Mission (SF to Oakland)",
     message:
-      "Execute a complete mission: create a corridor from San Francisco (37.7749, -122.4194) to Oakland (37.8044, -122.2712) at resolution 10, validate it, start a simulation, monitor 6 cycles checking block membership each time, complete the flight, verify chain integrity, and generate a compliance certificate.",
+      "Execute a complete mission: 1) Create a corridor from San Francisco (37.7749, -122.4194) to Oakland (37.8044, -122.2712) at resolution 10 and validate it. 2) Start a simulation — the drone will fly automatically. 3) Monitor the flight: call check_block_membership 8 times (wait a moment between checks). If DEVIATING, call generate_correction. 4) Once the drone reaches the end or after monitoring, call complete_flight. 5) Verify chain integrity and generate a compliance certificate.",
+  },
+  {
+    label: "Quick Demo (Short Corridor)",
+    message:
+      "Create a corridor named 'Bay Bridge' from SF (37.7875, -122.3908) to Treasure Island (37.8235, -122.3708) at resolution 11. Validate it. Start simulation. The drone flies automatically — monitor it by calling check_block_membership 5 times. If deviating, apply correction. Then complete the flight and generate a certificate.",
   },
   {
     label: "Create Corridor Only",
@@ -38,14 +43,14 @@ export function MissionControl({ isConnected, missionStatus, onStart, onReset }:
   };
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800 p-4 space-y-3">
+    <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
       <div className="flex items-center justify-between">
-        <h2 className="text-white font-medium text-sm">Mission Control</h2>
+        <h2 className="text-gray-800 font-semibold text-sm">Mission Control</h2>
         <div className="flex items-center gap-2">
           {isConnected ? (
-            <Wifi className="w-4 h-4 text-green-400" />
+            <Wifi className="w-4 h-4 text-green-500" />
           ) : (
-            <WifiOff className="w-4 h-4 text-red-400" />
+            <WifiOff className="w-4 h-4 text-red-500" />
           )}
           <StatusBadge status={missionStatus} />
         </div>
@@ -55,7 +60,7 @@ export function MissionControl({ isConnected, missionStatus, onStart, onReset }:
         <select
           value={mode}
           onChange={(e) => setMode(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white"
+          className="bg-gray-50 border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:border-blue-400"
         >
           <option value="single">Single Agent</option>
           <option value="guardian">Guardian Only</option>
@@ -64,7 +69,7 @@ export function MissionControl({ isConnected, missionStatus, onStart, onReset }:
         </select>
         <select
           onChange={(e) => setMessage(PRESETS[Number(e.target.value)].message)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white flex-1"
+          className="bg-gray-50 border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-700 flex-1 focus:outline-none focus:border-blue-400"
         >
           {PRESETS.map((p, i) => (
             <option key={i} value={i}>
@@ -78,7 +83,7 @@ export function MissionControl({ isConnected, missionStatus, onStart, onReset }:
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         rows={3}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 resize-none focus:outline-none focus:border-blue-500"
+        className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 resize-none focus:outline-none focus:border-blue-400"
         placeholder="Enter mission instructions..."
       />
 
@@ -86,14 +91,14 @@ export function MissionControl({ isConnected, missionStatus, onStart, onReset }:
         <button
           onClick={handleStart}
           disabled={!isConnected || isRunning || !message.trim()}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-sm font-medium text-white transition"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 rounded-lg text-sm font-medium text-white transition"
         >
           <Play className="w-4 h-4" />
           {isRunning ? "Running..." : "Start Mission"}
         </button>
         <button
           onClick={onReset}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition"
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-lg text-sm text-gray-600 transition"
         >
           <RotateCcw className="w-4 h-4" />
           Reset
