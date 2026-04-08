@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-**Delivered:** Full FastAPI backend with YAML-driven multi-agent orchestration for the Akasa Corridor Agent. The system supports both single-agent (all 18 tools) and multi-agent (orchestrated specialist agents) modes, with WebSocket, SSE, and REST endpoints.
+**Delivered:** Full-stack application — FastAPI backend with YAML-driven multi-agent orchestration, plus a Vite + React frontend dashboard with real-time drone corridor monitoring via WebSocket.
 
 **Branch:** `01_fastapi_multiagent_yaml`
 **Commits:**
@@ -491,3 +491,56 @@ React/Vite app with:
 - Tool filtering via `ToolRetriever` (semantic search, reduce tokens sent to LLM)
 - Prompt caching (already configured in YAML, needs Anthropic API)
 - Parallel tool execution for independent operations
+
+---
+
+## 9. Frontend Dashboard
+
+### Stack
+
+React 18 + Vite 5 + TypeScript + Tailwind CSS + Zustand + Leaflet + Framer Motion
+
+### Components
+
+| Component | Purpose |
+|-----------|---------|
+| `Dashboard` | Main layout: header + 2/3 map + 1/3 sidebar |
+| `DroneMap` | Leaflet dark tiles, drone marker (blue glow), corridor polyline, start/end markers |
+| `EventFeed` | Auto-scrolling color-coded event stream with animations |
+| `AgentPanel` | Agent status, thinking text, stats grid, recent tool results |
+| `MissionControl` | Mode selector, preset missions, start/stop, connection indicator |
+| `StatusBadge` | Animated pulse badge for active states |
+| `ToolExecutor` | Tool call + result visualization cards |
+
+### Data Flow
+
+```
+Backend Agent → WebSocket → useMission hook → Zustand store → React components
+```
+
+The `useMission` hook parses every WebSocket event and updates the appropriate store slice. Components subscribe to specific slices via Zustand selectors, so only affected components re-render.
+
+### How to Run Full Stack
+
+Terminal 1 — Backend:
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --port 8052 --reload
+```
+
+Terminal 2 — Frontend:
+```bash
+cd frontend
+npm install
+npm run dev    # http://localhost:3000
+```
+
+Vite proxies `/api` and `/ws` to the backend at `:8052`.
+
+### Testing the Dashboard
+
+1. Open `http://localhost:3000`
+2. Verify green WiFi icon (WebSocket connected)
+3. Select "Full Mission (SF → Oakland)" preset
+4. Click "Start Mission"
+5. Watch: map shows corridor + drone moving, event feed streams, agent panel updates
