@@ -1,214 +1,160 @@
-# FastAPI Multi-Agent Architecture — Akasa Corridor Agent
+# FastAPI Multi-Agent Architecture Strategy
 
-> Comprehensive reference for the YAML-driven multi-agent drone corridor system.
-> Adapted from [power-bi-backend-agent-v2](../README.md#related-repositories) patterns.
-
----
+This document describes the current FastAPI agent stack in [`app/main.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/main.py), the YAML-driven agent configuration model in [`configs/agents/`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents), and the next implementation steps needed to complete the multi-agent backend.
 
 ## 1. Architecture Overview
 
-The system supports **two operating modes** through a single FastAPI backend:
+The backend supports two execution styles behind one FastAPI surface:
 
-```
-                         ┌─────────────────────────────────┐
-                         │       FastAPI Backend            │
-                         │       (app/main.py)              │
-                         │                                  │
-                         │  /health          GET  health    │
-                         │  /ws/agent        WS   stream    │
-                         │  /api/v1/execute  POST  sync     │
-                         │  /api/v1/execute/stream  SSE     │
-                         │  /api/v1/mission  POST  mission  │
-                         │  /api/v1/tools    GET   info     │
-                         │  /api/v1/agents   GET   info     │
-                         └────────────┬────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                                    ▼
-       ┌────────────────────┐             ┌────────────────────────┐
-       │  SINGLE-AGENT MODE │             │  MULTI-AGENT MODE      │
-       │                    │             │                        │
-       │  CorridorAgent     │             │  MissionOrchestrator   │
-       │  mode="single"     │             │  (template-driven)     │
-       │  all 18 tools      │             │                        │
-       │                    │             │  Phase 1: Designer     │
-       │  Handles any       │             │  Phase 2: Guardian     │
-       │  request directly  │             │  Phase 3: Compliance   │
-       └────────────────────┘             └────────────────────────┘
+- Single-agent mode: one `CorridorAgent` instance owns all 18 tools and handles the full task end to end.
+- Multi-agent mode: an orchestrator routes work to specialist workers for corridor design, flight monitoring, and compliance.
+- YAML-based configuration: agent topology, prompts, models, memory, and worker routing are encoded in YAML so runtime behavior can be changed without rewriting the API layer.
+
+### Single-agent mode
+
+The default API path uses [`CorridorAgent`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py) in `mode="single"`. In that branch, `_create_single_agent()` builds one `SingleAgent` with:
+
+- one Bedrock gateway
+- one `ThreeTierMemory` session keyed by `job_id`
+- all tool definitions returned by `build_tool_definitions()`
+- one shared tool executor from `create_tool_executor()`
+
+This is the simplest operating mode for synchronous REST, SSE streaming, and WebSocket execution because the API only needs one wrapper object.
+
+```python
+agent = CorridorAgent(
+    job_id="mission-001",
+    mode="single",
+    max_iterations=20,
+)
 ```
 
-### Single-Agent Mode
+Flow:
 
-One `CorridorAgent` with all 18 tools handles any request. Best for interactive use, simple tasks, and the WebSocket/REST API.
-
-```
-User message → CorridorAgent(mode="single") → all 18 tools → response
-```
-
-### Multi-Agent Mode
-
-`MissionOrchestrator` executes predefined templates, delegating each phase to a specialist agent. Context from previous phases is automatically injected into subsequent phases.
-
-```
-Template "full_mission" →
-  Phase 1: CorridorAgent(mode="designer")   → create_corridor, validate_corridor
-  Phase 2: CorridorAgent(mode="guardian")    → start_simulation, check_block_membership, ...
-  Phase 3: CorridorAgent(mode="compliance")  → verify_chain_integrity, generate_certificate
+```text
+Client request
+  -> FastAPI endpoint
+  -> CorridorAgent(mode="single")
+  -> SingleAgent with all 18 tools
+  -> tool registry / executor
+  -> streamed or final response
 ```
 
----
+### Multi-agent mode
 
-## 2. File Structure
+The multi-agent design is encoded in [`configs/agents/orchestrator.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/orchestrator.yaml). The orchestrator is a `ManagerAgent` that:
 
-### app/ — Application Code
+- plans which worker should handle the task
+- routes phases to one of three specialists
+- stores shared mission state in orchestrator memory
+- synthesizes worker outputs into a final JSON response
 
-```
-app/
-├── __init__.py
-├── main.py                              # FastAPI app, CORS, routers, health check
-│                                         # Mounts /ws/agent and /api/v1/* routes
-│
-├── core/
-│   ├── __init__.py
-│   ├── config.py                        # pydantic-settings: gateway, CORS, multi-LLM
-│   │                                     # Reads from .env via Settings class
-│   └── logging.py                       # Rich color-coded logging
-│                                         # Agent colors: coordinator=magenta, guardian=cyan,
-│                                         # designer=green, compliance=blue
-│
-├── sdk_agent/
-│   ├── __init__.py
-│   ├── agent.py                         # CorridorAgent wrapper class
-│   │                                     # + factory functions: create_guardian_agent(),
-│   │                                     #   create_corridor_designer_agent(),
-│   │                                     #   create_compliance_agent()
-│   │                                     # + system prompts for all agent roles
-│   │
-│   ├── api.py                           # FastAPI router at /api/v1
-│   │                                     # WebSocket handler, SSE streaming, sync endpoint,
-│   │                                     # mission endpoint, tools list, agents list
-│   │                                     # Event mapping: AgentEvent → frontend JSON format
-│   │
-│   ├── tools/
-│   │   ├── registry.py                  # @tool decorator + execute_tool() + get_tool_definitions()
-│   │   ├── simulation/
-│   │   │   ├── engine.py                # DroneSimulator, FlightLedger, H3 geocode
-│   │   │   └── drone_tools.py           # 10 tools: start/step/position/block/correct/wind/gps/...
-│   │   ├── corridor/
-│   │   │   └── management.py            # 4 tools: create/list/detail/validate corridor
-│   │   └── compliance/
-│   │       └── ledger_tools.py          # 4 tools: events/chain/score/certificate
-│   │
-│   ├── orchestrator/
-│   │   ├── __init__.py
-│   │   ├── orchestrator.py              # MissionOrchestrator: sequential multi-agent execution
-│   │   │                                 # Context passing between phases via _build_context_prefix()
-│   │   └── templates.py                 # Predefined templates: full_mission, corridor_only,
-│   │                                     # compliance_audit
-│   │
-│   └── memory/
-│       ├── __init__.py
-│       └── job_memory.py                # JobMemory: tracks task results, tool summaries,
-│                                         # cross-task context for orchestrator
-│
-└── guidance/                             # (placeholder for future domain guidance docs)
+Worker split:
+
+- `corridor_designer`: create and validate corridors
+- `flight_guardian`: run simulation, detect deviations, correct flight path
+- `compliance_recorder`: verify ledger integrity and issue certificates
+
+Flow:
+
+```text
+Client request
+  -> FastAPI endpoint
+  -> CorridorAgent.from_config(... orchestrator.yaml)
+  -> ManagerAgent planner
+  -> designer / guardian / compliance worker
+  -> synthesizer
+  -> final structured response
 ```
 
-### configs/ — YAML Agent Configurations
+### YAML-based configuration pattern
 
-```
-configs/
-└── agents/
-    ├── sdk_agent.yaml                   # SingleAgent — all 18 tools, standalone mode
-    ├── orchestrator.yaml                # ManagerAgent — routes to designer/guardian/compliance
-    ├── corridor_designer.yaml           # Worker: 4 corridor tools (Qwen 3 VL)
-    ├── flight_guardian.yaml             # Worker: 10 simulation tools (Claude Haiku 4.5)
-    └── compliance_recorder.yaml         # Worker: 5 compliance tools (Qwen 3 VL)
-```
+YAML is the contract between infrastructure and runtime. The code in [`app/sdk_agent/agent.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py) supports both:
 
----
+- programmatic creation via constructors such as `create_guardian_agent()`
+- configuration-based creation via `CorridorAgent.from_config()`
 
-## 3. Agent Modes and YAML Patterns
+That split is useful because:
 
-### CorridorAgent Modes
+- local development can start with direct Python construction
+- deployment can switch models, prompts, and workers via YAML
+- new agents can be introduced without changing FastAPI route definitions
 
-| Mode | Model | Tools | Use Case |
-|------|-------|-------|----------|
-| `single` | `LLM_MODEL` | All 18 | Interactive API, general requests |
-| `guardian` | `GUARDIAN_MODEL` | 10 simulation | Flight monitoring phase |
-| `designer` | `WORKER_MODEL` | 4 corridor | Corridor creation phase |
-| `compliance` | `WORKER_MODEL` | 5 compliance | Certification phase |
-| `config` | from YAML | from YAML | Config-driven creation |
+## 2. File Structure Created
 
-### YAML Pattern: SingleAgent (Worker)
+### `app/`
 
-Used for standalone agents and orchestrator workers.
+- [`app/main.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/main.py): FastAPI app bootstrap, CORS, `/health`, root metadata, router wiring, and `/ws/agent`.
+- [`app/core/config.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/core/config.py): environment-backed application settings.
+- [`app/core/logging.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/core/logging.py): logging setup for the backend process.
+- [`app/sdk_agent/agent.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py): `CorridorAgent` wrapper, programmatic factories, config loading, tool definition bridging.
+- [`app/sdk_agent/api.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/api.py): REST, SSE, and WebSocket-facing agent execution helpers and request models.
+- [`app/sdk_agent/tools/registry.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/registry.py): global tool registry, `@tool` decorator, `execute_tool()`, and tool metadata export.
+- [`app/sdk_agent/tools/corridor/management.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/corridor/management.py): corridor-management tools.
+- [`app/sdk_agent/tools/simulation/drone_tools.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/simulation/drone_tools.py): drone simulation tool entrypoints.
+- [`app/sdk_agent/tools/simulation/engine.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/simulation/engine.py): simulation engine state and flight progression logic.
+- [`app/sdk_agent/tools/compliance/ledger_tools.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/compliance/ledger_tools.py): compliance and certificate tools.
+- [`app/sdk_agent/orchestrator/orchestrator.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/orchestrator/orchestrator.py): orchestration runtime using `CorridorAgent` workers.
+- [`app/sdk_agent/orchestrator/templates.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/orchestrator/templates.py): reusable mission template definitions.
+- [`app/sdk_agent/memory/job_memory.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/memory/job_memory.py): job-scoped mission state tracking across phases.
+- [`app/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/__init__.py), [`app/core/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/core/__init__.py), [`app/sdk_agent/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/__init__.py), [`app/sdk_agent/memory/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/memory/__init__.py), [`app/sdk_agent/orchestrator/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/orchestrator/__init__.py), [`app/sdk_agent/tools/corridor/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/corridor/__init__.py), [`app/sdk_agent/tools/simulation/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/simulation/__init__.py), [`app/sdk_agent/tools/compliance/__init__.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/compliance/__init__.py): package markers and import surfaces.
+
+### `configs/`
+
+- [`configs/agents/sdk_agent.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/sdk_agent.yaml): standalone `SingleAgent` with all 18 tools.
+- [`configs/agents/orchestrator.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/orchestrator.yaml): `ManagerAgent` planner, synthesizer, shared memory, and worker map.
+- [`configs/agents/corridor_designer.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/corridor_designer.yaml): worker config for corridor creation and validation.
+- [`configs/agents/flight_guardian.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/flight_guardian.yaml): worker config for simulation and correction loops.
+- [`configs/agents/compliance_recorder.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/compliance_recorder.yaml): worker config for audit and certificate generation.
+
+## 3. Agent Modes
+
+### `SingleAgent` via `sdk_agent.yaml`
+
+[`configs/agents/sdk_agent.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/sdk_agent.yaml) defines one standalone agent with all 18 tools across:
+
+- 4 corridor tools
+- 10 simulation tools
+- 4 compliance tools
+
+This is the lowest-friction runtime for:
+
+- `/api/v1/execute`
+- `/api/v1/execute/stream`
+- `/ws/agent`
+
+Representative snippet:
 
 ```yaml
 apiVersion: agent.framework/v1
 kind: SingleAgent
-
 metadata:
-  name: Agent_Name
-  version: 1.0.0
-  description: What this agent does
-
+  name: Akasa_Corridor_Agent
 gateway:
-  type: ${LLM_GATEWAY:-BedrockGateway}      # Env var with default
-  config:
-    model: ${WORKER_MODEL:-qwen.qwen3-vl-235b-a22b}
-    region: ${AWS_REGION:-us-east-1}
-    max_tokens: 1024
-    temperature: 0.1
-    cache:
-      enabled: true
-      cache_system_prompt: true
-      cache_tools: true
-
+  type: ${LLM_GATEWAY:-BedrockGateway}
 agent:
-  system_prompt: |
-    Role description and instructions...
-  max_iterations: 10
-
+  max_iterations: 25
 tools:
-  - name: tool_name
-    category: read|write
-    description: What the tool does
-
+  - name: create_corridor
+  - name: start_simulation
+  - name: generate_certificate
 memory:
   type: ThreeTierMemory
-  max_messages: 30
   session_id: ${JOB_ID}
 ```
 
-### YAML Pattern: ManagerAgent (Orchestrator)
+### `ManagerAgent` via `orchestrator.yaml`
 
-Used for the top-level mission coordinator that routes to workers.
+[`configs/agents/orchestrator.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/orchestrator.yaml) defines the coordinator runtime. Its planner chooses a worker, and its synthesizer normalizes outputs into a final JSON payload.
+
+Representative snippet:
 
 ```yaml
 apiVersion: agent.framework/v2
 kind: ManagerAgent
-
-metadata:
-  name: Orchestrator_Name
-  version: 1.0.0
-  description: Routes tasks to specialist workers
-
 resources:
   inference_gateways:
     - name: orchestrator-gateway
-      type: ${LLM_GATEWAY:-BedrockGateway}
-      config:
-        model: ${COORDINATOR_MODEL:-global.anthropic.claude-haiku-4-5-20251001-v1:0}
-        region: ${AWS_REGION:-us-east-1}
-        temperature: 0.1
-
-  subscribers:
-    - name: logging
-      type: LoggingSubscriber
-      config:
-        level: INFO
-
 spec:
   workers:
     - name: designer
@@ -217,364 +163,375 @@ spec:
       config_path: flight_guardian.yaml
     - name: compliance
       config_path: compliance_recorder.yaml
+```
 
-  planner:
-    type: StrategicPlanner
-    config:
-      inference_gateway: orchestrator-gateway
-      worker_keys: [designer, guardian, compliance]
-      planning_prompt: |
-        Route user intent to the appropriate worker...
+### Worker agents
 
-  synthesizer:
-    enabled: true
-    inference_gateway: orchestrator-gateway
-    system_prompt: |
-      Format worker results into structured JSON...
+[`configs/agents/corridor_designer.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/corridor_designer.yaml)
 
+- Purpose: create corridor geometry and validate it before flight.
+- Tool scope: `create_corridor`, `list_corridors`, `get_corridor_detail`, `validate_corridor`.
+
+[`configs/agents/flight_guardian.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/flight_guardian.yaml)
+
+- Purpose: operate the monitoring loop and apply corrections.
+- Tool scope: simulation lifecycle, position checks, disturbance injection, telemetry, emergency actions.
+
+[`configs/agents/compliance_recorder.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/compliance_recorder.yaml)
+
+- Purpose: audit the completed mission and produce a compliance artifact.
+- Tool scope: event retrieval, chain verification, scoring, certificate generation.
+
+## 4. YAML Configuration Pattern
+
+### SingleAgent structure
+
+Current single-agent YAMLs follow this shape:
+
+```yaml
+apiVersion: agent.framework/v1
+kind: SingleAgent
+
+metadata:
+  name: <agent-name>
+  version: <semver>
+  description: <what this agent does>
+
+gateway:
+  type: <gateway-class>
+  config:
+    model: <foundation-model>
+    region: <aws-region>
+    max_tokens: <int>
+    temperature: <float>
+
+agent:
+  system_prompt: |
+    <role and operating rules>
+  max_iterations: <int>
+
+tools:
+  - name: <tool-name>
+    category: <read|write>
+    description: <tool purpose>
+
+memory:
+  type: ThreeTierMemory
+  max_messages: <int>
+  session_id: ${JOB_ID}
+```
+
+This pattern is used by:
+
+- [`configs/agents/sdk_agent.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/sdk_agent.yaml)
+- [`configs/agents/corridor_designer.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/corridor_designer.yaml)
+- [`configs/agents/flight_guardian.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/flight_guardian.yaml)
+- [`configs/agents/compliance_recorder.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/compliance_recorder.yaml)
+
+### ManagerAgent structure
+
+The orchestrator YAML follows a different shape because it needs shared resources and worker routing:
+
+```yaml
+apiVersion: agent.framework/v2
+kind: ManagerAgent
+
+metadata:
+  name: <manager-name>
+  description: <routing role>
+  version: <semver>
+
+resources:
+  inference_gateways:
+    - name: <gateway-name>
+      type: <gateway-class>
+      config:
+        model: <planner-model>
+  subscribers:
+    - name: logging
+      type: LoggingSubscriber
+
+spec:
+  policies:
+    $preset: manager_with_followups
+  workers:
+    - name: <worker-key>
+      config_path: <worker-yaml>
   memory:
     type: SharedInMemoryMemory
     config:
       namespace: ${JOB_ID:-default}
       agent_key: orchestrator
+  planner:
+    type: StrategicPlanner
+    config:
+      inference_gateway: <gateway-name>
+      worker_keys: [<worker-key>]
+      planning_prompt: |
+        <routing rubric>
+  synthesizer:
+    enabled: true
+    inference_gateway: <gateway-name>
+    system_prompt: |
+      <output contract>
 ```
 
-### Multi-LLM Strategy
+### How to add a new agent
 
-| Role | Model | Env Var | Rationale |
-|------|-------|---------|-----------|
-| Coordinator | Claude Haiku 4.5 | `COORDINATOR_MODEL` | Safety-critical routing decisions |
-| Guardian | Claude Haiku 4.5 | `GUARDIAN_MODEL` | Safety-critical flight monitoring |
-| Designer | Qwen 3 VL 235B | `WORKER_MODEL` | Tool calling, cost-effective (~3x cheaper) |
-| Compliance | Qwen 3 VL 235B | `WORKER_MODEL` | Tool calling, cost-effective |
+1. Create a new YAML file under [`configs/agents/`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents).
+2. Limit the tool list and prompt to a single responsibility.
+3. If the agent will be used programmatically, add a factory in [`app/sdk_agent/agent.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py).
+4. If it should participate in orchestration, register it in [`configs/agents/orchestrator.yaml`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/configs/agents/orchestrator.yaml) under `spec.workers` and add it to the planner prompt and `worker_keys`.
+5. If it requires new capabilities, register new tools in [`app/sdk_agent/tools/registry.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/registry.py) and their implementation modules.
 
----
+Minimal worker example:
 
-## 4. API Endpoints
+```yaml
+apiVersion: agent.framework/v1
+kind: SingleAgent
+metadata:
+  name: Incident_Responder
+  version: 1.0.0
+  description: Handles incident triage
+gateway:
+  type: ${LLM_GATEWAY:-BedrockGateway}
+  config:
+    model: ${WORKER_MODEL}
+agent:
+  system_prompt: |
+    You handle mission incidents only.
+  max_iterations: 8
+tools:
+  - name: emergency_land
+    category: write
+    description: Abort flight
+memory:
+  type: ThreeTierMemory
+  max_messages: 20
+  session_id: ${JOB_ID}
+```
 
-### REST Endpoints
+## 5. API Endpoints
 
-| Endpoint | Method | Request Body | Description |
-|----------|--------|-------------|-------------|
-| `/health` | GET | — | Health check with framework version |
-| `/` | GET | — | Root info with available endpoints |
-| `/api/v1/execute` | POST | `ExecuteRequest` | Synchronous agent execution |
-| `/api/v1/execute/stream` | POST | `ExecuteRequest` | SSE streaming execution |
-| `/api/v1/mission` | POST | `MissionRequest` | Full mission SSE (design→fly→certify) |
-| `/api/v1/tools` | GET | — | List all 18 registered tools |
-| `/api/v1/agents` | GET | — | List available YAML agent configs |
+### `/health`
 
-### Request Models
+Defined in [`app/main.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/main.py). Returns service status, version, and whether `agent_framework` loaded successfully.
 
 ```python
-# ExecuteRequest — for /execute and /execute/stream
-{
-    "job_id": "mission-001",
-    "message": "Create a corridor from SF to Oakland",
-    "model": null,           # optional override
-    "max_iterations": 20     # optional
-}
-
-# MissionRequest — for /mission
-{
-    "job_id": "mission-001",
-    "start_lat": 37.7749,
-    "start_lon": -122.4194,
-    "end_lat": 37.8044,
-    "end_lon": -122.2712,
-    "corridor_name": "SF-Oakland Corridor",
-    "resolution": 10,
-    "monitor_cycles": 8
-}
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "agent_framework": AGENT_FRAMEWORK_VERSION if SDK_AGENT_AVAILABLE else None,
+    }
 ```
 
-### WebSocket Protocol (`/ws/agent`)
+### `/api/v1/execute`
 
-```jsonc
-// ── Client → Server ──
-
-// Set context (optional, creates agent with mode)
-{"action": "set_context", "job_id": "mission-001", "mode": "single"}
-
-// Execute a task
-{"action": "execute", "message": "Create a corridor", "job_id": "mission-001"}
-
-// Keepalive
-{"action": "ping"}
-
-// ── Server → Client ──
-
-// Connection established
-{"event": "connected", "data": {"agent": "akasa-corridor-agent", "version": "1.0.0"}}
-
-// Agent lifecycle events
-{"event": "status",    "data": {"message": "Starting...", "display": "inline"}}
-{"event": "thinking",  "data": {"message": "Processing...", "iteration": 1}}
-{"event": "tool_call", "data": {"tool": "create_corridor", "args": {...}, "tool_index": 1}}
-{"event": "tool_done", "data": {"tool": "create_corridor", "success": true, "result": {...}}}
-{"event": "content",   "data": {"text": "Corridor created successfully...", "content": "..."}}
-{"event": "complete",  "data": {"duration_s": 12.3, "iterations": 5, "tool_calls": 4}}
-
-// Simulation-specific event (emitted after simulation-modifying tools)
-{"event": "simulation_updated", "data": {"tool": "step_simulation"}}
-
-// Error
-{"event": "error", "data": {"message": "Tool execution failed: ..."}}
-```
-
----
-
-## 5. Usage Examples
-
-### Programmatic: Single-Agent
+Defined in [`app/sdk_agent/api.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/api.py). Runs the agent to completion and returns a synchronous JSON response.
 
 ```python
-from app.sdk_agent.agent import CorridorAgent
-
-# Create agent with all tools
-agent = CorridorAgent(job_id="demo-001", mode="single")
-
-# Run with streaming events
-async for event in agent.run("Create a corridor from SF to Oakland at resolution 10"):
-    print(event.type, event.data)
-
-# Or run to completion
-result = await agent.run_to_completion("List all corridors")
-print(result["content"])
+@router.post("/execute", response_model=ExecuteResponse)
+async def execute_sync(request: ExecuteRequest):
+    agent = CorridorAgent(
+        job_id=request.job_id,
+        max_iterations=request.max_iterations or 20,
+    )
+    result = await agent.run_to_completion(request.message)
+    return ExecuteResponse(
+        content=result["content"],
+        duration_s=result["duration_s"],
+        tool_calls=result["tool_calls"],
+    )
 ```
 
-### Programmatic: Specialist Agent
+### `/api/v1/execute/stream`
+
+Defined in [`app/sdk_agent/api.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/api.py). Streams execution events as Server-Sent Events.
 
 ```python
-from app.sdk_agent.agent import CorridorAgent
+@router.post("/execute/stream")
+async def execute_stream(request: ExecuteRequest):
+    agent = CorridorAgent(job_id=request.job_id)
 
-# Create guardian-only agent
-guardian = CorridorAgent(job_id="flight-001", mode="guardian")
-
-# Monitor a flight
-async for event in guardian.run("Monitor flight for 8 cycles"):
-    print(event.type, event.data)
+    async def event_generator():
+        async for event in agent.run(request.message):
+            frontend_event = map_event_to_frontend(event, request.job_id)
+            yield f"data: {json.dumps(frontend_event)}\n\n"
 ```
 
-### Programmatic: Multi-Agent Orchestrator
+### `/ws/agent`
 
-```python
-from app.sdk_agent.orchestrator import MissionOrchestrator
+Mounted in [`app/main.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/main.py) and implemented by `websocket_agent()` in [`app/sdk_agent/api.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/api.py). Supports:
 
-orch = MissionOrchestrator(job_id="mission-001")
+- `set_context`
+- `execute`
+- `ping`
 
-async for event in orch.run("full_mission"):
-    if event.type == "task_start":
-        print(f"Phase: {event.data['task_name']} ({event.data['agent_mode']})")
-    elif event.type == "task_complete":
-        print(f"  Done: {event.data['tool_calls']} tool calls")
-    elif event.type == "job_complete":
-        print(f"Mission complete: {event.data['completed_tasks']}/{event.data['total_tasks']}")
+Representative message flow:
+
+```json
+{"action":"set_context","job_id":"mission-001","mode":"single"}
+{"action":"execute","job_id":"mission-001","message":"Create and validate a corridor"}
 ```
 
-### Config-Based: From YAML
+## 6. Usage Examples
+
+### Programmatic
+
+Use direct construction when the app controls execution mode explicitly:
 
 ```python
 from app.sdk_agent.agent import CorridorAgent
 
-# Load from default sdk_agent.yaml
-agent = CorridorAgent.from_config(job_id="yaml-001")
+agent = CorridorAgent(job_id="mission-001", mode="single")
+result = await agent.run_to_completion("Create a corridor from SF to Oakland")
+```
 
-# Load from custom config
+### Config-based
+
+Use YAML when the runtime should load topology and prompts from config:
+
+```python
+from app.sdk_agent.agent import CorridorAgent
+
 agent = CorridorAgent.from_config(
-    job_id="yaml-002",
-    config_path="configs/agents/flight_guardian.yaml",
+    job_id="mission-001",
+    config_path="configs/agents/orchestrator.yaml",
 )
 ```
 
-### Factory Functions (Original API — still supported)
+`from_config()` in [`app/sdk_agent/agent.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py) loads the YAML through `ConfigLoader`, sets `JOB_ID`, builds tool definitions, and constructs the framework agent via `SingleAgent.from_config(...)`.
 
-```python
-from app.sdk_agent.agent import (
-    create_guardian_agent,
-    create_corridor_designer_agent,
-    create_compliance_agent,
-)
+### API calls with `curl`
 
-# Direct framework SingleAgent instances
-guardian = create_guardian_agent(max_iterations=20)
-designer = create_corridor_designer_agent()
-compliance = create_compliance_agent()
-
-# Use with framework API
-async for event in guardian.run("Monitor the corridor for 10 cycles"):
-    print(event)
-```
-
-### cURL: REST API
+Sync request:
 
 ```bash
-# Health check
-curl http://localhost:8052/health
-
-# Sync execution
 curl -X POST http://localhost:8052/api/v1/execute \
-  -H "Content-Type: application/json" \
-  -d '{"job_id": "test-001", "message": "List all corridors"}'
-
-# SSE streaming
-curl -X POST http://localhost:8052/api/v1/execute/stream \
-  -H "Content-Type: application/json" \
-  -d '{"job_id": "test-002", "message": "Create a corridor from (37.77, -122.42) to (37.80, -122.27)"}'
-
-# Full mission
-curl -X POST http://localhost:8052/api/v1/mission \
   -H "Content-Type: application/json" \
   -d '{
     "job_id": "mission-001",
-    "start_lat": 37.7749, "start_lon": -122.4194,
-    "end_lat": 37.8044, "end_lon": -122.2712,
-    "corridor_name": "SF-Oakland",
-    "resolution": 10,
-    "monitor_cycles": 8
+    "message": "Create and validate a corridor from San Francisco to Oakland",
+    "max_iterations": 20
   }'
-
-# List tools
-curl http://localhost:8052/api/v1/tools
-
-# List agent configs
-curl http://localhost:8052/api/v1/agents
 ```
 
-### Running the Server
+SSE request:
 
 ```bash
-# Development (with auto-reload)
-uvicorn app.main:app --host localhost --port 8052 --reload
-
-# Production
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
-# With explicit env
-LLM_GATEWAY=BedrockGateway GUARDIAN_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0 \
-  uvicorn app.main:app --port 8052
+curl -N -X POST http://localhost:8052/api/v1/execute/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "mission-001",
+    "message": "Run a full mission and stream each step"
+  }'
 ```
 
----
+Health check:
 
-## 6. Tool Registry Pattern
+```bash
+curl http://localhost:8052/health
+```
 
-All 18 tools are registered via the `@tool` decorator in `app/sdk_agent/tools/registry.py`:
+### API calls with Python
+
+Sync:
 
 ```python
-from app.sdk_agent.tools.registry import tool
+import requests
 
-@tool(
-    name="check_block_membership",
-    description="Check if drone is in assigned geocode block",
-    parameters={
-        "type": "object",
-        "properties": {
-            "flight_id": {"type": "string", "description": "Flight ID"},
-        },
-        "required": ["flight_id"],
+response = requests.post(
+    "http://localhost:8052/api/v1/execute",
+    json={
+        "job_id": "mission-001",
+        "message": "Create and validate a corridor",
+        "max_iterations": 20,
     },
+    timeout=120,
 )
-def check_block_membership(flight_id: str) -> dict:
-    # Implementation...
-    return {"status": "NOMINAL", "assigned_block": "8a...", "current_block": "8a..."}
+print(response.json())
 ```
 
-Tools by domain:
+Streaming:
 
-| Domain | Count | Tools |
-|--------|-------|-------|
-| **Simulation** | 10 | start_simulation, step_simulation, get_drone_position, check_block_membership, generate_correction, inject_wind_gust, inject_gps_noise, get_flight_telemetry, complete_flight, emergency_land |
-| **Corridor** | 4 | create_corridor, list_corridors, get_corridor_detail, validate_corridor |
-| **Compliance** | 4 | get_flight_events, verify_chain_integrity, calculate_conformance_score, generate_certificate |
+```python
+import requests
 
----
+with requests.post(
+    "http://localhost:8052/api/v1/execute/stream",
+    json={
+        "job_id": "mission-001",
+        "message": "Monitor the flight and stream tool calls",
+    },
+    stream=True,
+    timeout=120,
+) as response:
+    for line in response.iter_lines():
+        if line:
+            print(line.decode())
+```
 
-## 7. Key Design Decisions
+## 7. Next Steps
 
-| Decision | Rationale |
-|----------|-----------|
-| `CorridorAgent` wrapper class | Mirrors `PowerBIAgent` from power-bi-backend-agent-v2 — single entry point for all modes |
-| YAML configs with `${ENV_VAR:-default}` | Same pattern as power-bi — deploy-time configuration without code changes |
-| `BedrockGateway` default | Project uses AWS Bedrock for both Claude and Qwen models |
-| Claude Haiku for safety-critical roles | Guardian/Coordinator need reliable reasoning; Claude models can't be fine-tuned |
-| Qwen 3 VL for workers | Good tool calling at ~3x lower cost; suitable for deterministic tasks |
-| SSE + WebSocket + REST | Three transport options match power-bi patterns; frontend can choose |
-| `simulation_updated` WS event | Enables real-time UI updates for drone position visualization |
-| `JobMemory` for cross-task context | Orchestrator passes summarized results between phases efficiently |
-| Template-based orchestration | Predefined workflows (full_mission, corridor_only, compliance_audit) |
+### 1. Implement tool executor integration
 
----
+The basic bridge already exists in [`app/sdk_agent/agent.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/agent.py) and [`app/sdk_agent/tools/registry.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/tools/registry.py), but the next step is to formalize:
 
-## 8. Environment Variables
+- typed tool result envelopes
+- consistent error contracts
+- async-safe execution for long-running tools
+- better observability around tool latency and failures
+
+### 2. Add memory persistence
+
+The current configs use in-memory session state. Persisting mission memory should move:
+
+- agent conversation history
+- mission phase outputs
+- compliance artifacts
+- resumable job metadata
+
+Likely integration points:
+
+- [`app/sdk_agent/memory/job_memory.py`](/Users/autoai-mini/Documents/axplusb/akasa-corridor-agent/app/sdk_agent/memory/job_memory.py)
+- `ThreeTierMemory` / shared-memory config substitution
+
+### 3. Deploy to Railway
+
+Deployment work should package:
+
+- FastAPI process startup
+- env var configuration for Bedrock and model selection
+- persistent backing services if memory is externalized
+- health checks on `/health`
+
+Minimal run target:
 
 ```bash
-# Core
-LLM_GATEWAY=BedrockGateway           # Gateway type
-LLM_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0  # Default model
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-
-# Multi-LLM
-COORDINATOR_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
-GUARDIAN_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
-MANAGER_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
-WORKER_MODEL=qwen.qwen3-vl-235b-a22b
-
-# App
-APP_HOST=localhost
-APP_PORT=8052
-DEBUG=true
-ENVIRONMENT=development
-
-# Features
-ENABLE_PROMPT_CACHING=true
-WS_ENABLED=true
-WS_TOKEN=your-ws-token
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
----
+### 4. Create frontend dashboard
 
-## 9. Comparison with power-bi-backend-agent-v2
+The API surface already supports a dashboard with:
 
-| Aspect | power-bi-backend-agent-v2 | akasa-corridor-agent |
-|--------|--------------------------|---------------------|
-| Wrapper class | `PowerBIAgent` | `CorridorAgent` |
-| API prefix | `/api/v4` | `/api/v1` |
-| Agent modes | single, config | single, guardian, designer, compliance, config |
-| Orchestrator | `Orchestrator` + `PowerBIOrchestrator` | `MissionOrchestrator` |
-| YAML configs | 6 workers + orchestrator | 3 workers + orchestrator + standalone |
-| Gateway | OpenRouter / Claude / Bedrock | Bedrock only |
-| Tool count | 50+ (data model, report, publish) | 18 (simulation, corridor, compliance) |
-| Memory | `EnhancedJobMemory` | `JobMemory` |
-| Domain events | `model_updated` | `simulation_updated` |
-| Templates | validate_and_fix_dax, etc. | full_mission, corridor_only, compliance_audit |
+- WebSocket event streaming from `/ws/agent`
+- SSE fallback via `/api/v1/execute/stream`
+- agent capability discovery via `/api/v1/tools` and `/api/v1/agents`
 
----
+The frontend should expose:
 
-## 10. Next Steps
+- job creation and selection
+- real-time event timeline
+- tool-call trace view
+- mission summary and certificate display
 
-### Immediate
+## Recommended Implementation Sequence
 
-- [ ] **Test API endpoints** — start server, verify `/health`, test WebSocket with a client
-- [ ] **Wire orchestrator to API** — add `/api/v1/orchestrate` endpoint that runs templates
-- [ ] **Add `pydantic-settings`** dependency resolution — ensure `pip install -e .` works cleanly
-
-### Short-term
-
-- [ ] **Frontend web interface** — React/Vite dashboard with:
-  - Map visualization (H3 hexagon cells, corridor path, drone position)
-  - Real-time WebSocket connection for live flight monitoring
-  - Mission control panel (create corridor, start mission, view certificate)
-- [ ] **Guidance system** — populate `app/guidance/` with domain docs for corridor design patterns
-- [ ] **Deploy to Railway** — add `railway.json`, `Dockerfile`, health check at `/health`
-- [ ] **Add Vercel frontend** — React app connecting to Railway backend via WebSocket
-
-### Medium-term
-
-- [ ] **Config-driven orchestrator** — load `orchestrator.yaml` via `ManagerAgent.from_config()` for full YAML-driven multi-agent routing (currently uses programmatic `MissionOrchestrator`)
-- [ ] **Tool filtering** — semantic tool retrieval (like power-bi's `ToolRetriever`) to reduce token usage
-- [ ] **Shared memory between agents** — use `SharedInMemoryMemory` for corridor_id/flight_id passing
-- [ ] **Event replay** — record and replay mission events for debugging
-- [ ] **Multi-corridor support** — concurrent flights on different corridors
+1. Finish config-driven multi-agent loading on the main execution path so `orchestrator.yaml` can be used by the API directly.
+2. Harden tool execution contracts and telemetry.
+3. Persist job memory and mission outputs.
+4. Deploy the backend to Railway.
+5. Build the dashboard against WebSocket and SSE endpoints.
